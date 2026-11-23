@@ -1,6 +1,6 @@
 # build outputs of the injected dylibs
-Mods/QuickBar/*.dylib
+QuickBar/*.dylib
 
 # packaging output and the extracted SideStore framework
-Mods/out/
+out/
 vendor/
