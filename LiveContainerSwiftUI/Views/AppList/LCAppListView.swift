@@ -1716,6 +1716,16 @@ private struct LCITunesResult: Codable {
     let artworkUrl100: String?
     let screenshotUrls: [String]?
     let description: String?
+    // "2019-08-29T07:00:00Z" — the store's own release date. Only the year is
+    // used, for the landscape detail card.
+    let releaseDate: String?
+}
+
+// Everything the landscape detail panel says about a game besides its name and
+// version: the official one-paragraph intro and the year it came out.
+struct LCGalleryGameMeta: Codable, Equatable {
+    var intro: String
+    var year: String?
 }
 
 // Building a query string by hand and then handing it to `URL(string:)` is a
@@ -2251,8 +2261,9 @@ final class LCGalleryMetaStore {
     static let shared = LCGalleryMetaStore()
     static let metaReady = Notification.Name("LCGalleryMetaReady")
 
-    private var cache: [String: String] = [:]
+    private var cache: [String: LCGalleryGameMeta] = [:]
     private var inFlight: Set<String> = []
+    private var diskLoaded = false
     private static let fallback = "一款值得一玩的精选游戏，点击即可开始"
 
     private static let session: URLSession = {
@@ -2263,25 +2274,67 @@ final class LCGalleryMetaStore {
     }()
 
     func intro(for app: LCAppModel) -> String {
+        gameMeta(for: app).intro
+    }
+
+    // The landscape detail panel asks for this. Resolution order is memory →
+    // disk → the store, so a game that has been described once is described
+    // instantly on every later launch, exactly like the covers.
+    func gameMeta(for app: LCAppModel) -> LCGalleryGameMeta {
         let key = Self.key(for: app)
         if let hit = cache[key] { return hit }
+        loadDiskIfNeeded()
+        if let stored = cache[key] { return stored }
         let local = Self.localIntro(for: app)
         request(name: app.displayName, key: key)
-        return local.isEmpty ? Self.fallback : local
+        return LCGalleryGameMeta(intro: local.isEmpty ? Self.fallback : local, year: nil)
     }
 
     private func request(name: String, key: String) {
         guard !inFlight.contains(key) else { return }
         inFlight.insert(key)
         Task.detached(priority: .utility) {
-            let text = await Self.fetchIntro(forName: name)
+            let meta = await Self.fetchMeta(forName: name)
             await MainActor.run {
                 self.inFlight.remove(key)
-                if let text = text, !text.isEmpty {
-                    self.cache[key] = text
+                if let meta = meta, !meta.intro.isEmpty {
+                    self.cache[key] = meta
+                    self.persist()
                     NotificationCenter.default.post(name: Self.metaReady, object: key)
                 }
             }
+        }
+    }
+
+    // MARK: - Persisted meta
+
+    // Caches/LCGalleryGameMeta.json — one dictionary for the whole library.
+    private static let diskQueue = DispatchQueue(label: "lc.gallery.meta.disk",
+                                                 qos: .utility)
+
+    private static let diskURL: URL? = {
+        guard let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        else { return nil }
+        return base.appendingPathComponent("LCGalleryGameMeta.json")
+    }()
+
+    private func loadDiskIfNeeded() {
+        guard !diskLoaded else { return }
+        diskLoaded = true
+        guard let url = Self.diskURL,
+              let data = try? Data(contentsOf: url),
+              let stored = try? JSONDecoder().decode([String: LCGalleryGameMeta].self, from: data)
+        else { return }
+        // Anything already fetched in this session wins over what was on disk.
+        cache.merge(stored) { current, _ in current }
+    }
+
+    private func persist() {
+        let snapshot = cache
+        Self.diskQueue.async {
+            guard let url = Self.diskURL,
+                  let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: url, options: .atomic)
         }
     }
 
@@ -2300,7 +2353,7 @@ final class LCGalleryMetaStore {
         return ""
     }
 
-    private static func fetchIntro(forName name: String) async -> String? {
+    private static func fetchMeta(forName name: String) async -> LCGalleryGameMeta? {
         let query = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return nil }
         for country in ["cn", "us"] {
@@ -2313,24 +2366,40 @@ final class LCGalleryMetaStore {
                 .map { (score: LCGalleryOnlineCoverStore.matchScoreOpen(name, $0.trackName ?? ""), item: $0) }
                 .filter { $0.score >= 0.45 }
                 .sorted { $0.score > $1.score }
-            if let desc = ranked.first?.item.description, !desc.isEmpty {
-                return oneLine(desc)
-            }
+            guard let best = ranked.first?.item else { continue }
+            // The detail panel has room for a paragraph, not a single line.
+            let intro = oneLine(best.description ?? "", limit: 132)
+            guard !intro.isEmpty else { continue }
+            return LCGalleryGameMeta(intro: intro, year: year(from: best.releaseDate))
         }
         return nil
     }
 
-    // Collapse to a single readable line, strip HTML, cap length.
-    private static func oneLine(_ raw: String) -> String {
+    // "2019-08-29T07:00:00Z" → "2019". Anything implausible is dropped, so the
+    // panel omits the chip instead of printing junk.
+    private static func year(from releaseDate: String?) -> String? {
+        guard let raw = releaseDate, raw.count >= 4 else { return nil }
+        let head = String(raw.prefix(4))
+        guard head.allSatisfy({ $0.isNumber }),
+              let value = Int(head), value > 1970, value < 2100 else { return nil }
+        return head
+    }
+
+    // Collapse to readable text, strip HTML, cap length.
+    private static func oneLine(_ raw: String, limit: Int = 28) -> String {
         var text = raw
             .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let stop = text.range(of: "。") { text = String(text[..<stop.upperBound]) }
-        if let stop = text.range(of: ". ") { text = String(text[..<stop.lowerBound]) }
-        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.count > 28 { text = String(text.prefix(28)) + "…" }
+        // Only the short (hero) variant is cut back to one sentence; the detail
+        // panel wants the opening paragraph to breathe.
+        if limit <= 28 {
+            if let stop = text.range(of: "。") { text = String(text[..<stop.upperBound]) }
+            if let stop = text.range(of: ". ") { text = String(text[..<stop.lowerBound]) }
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if text.count > limit { text = String(text.prefix(limit)) + "…" }
         return text
     }
 }
@@ -3456,6 +3525,9 @@ struct LCHomeGalleryView: View {
     var onCustomSort: () -> Void
 
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    // Launching a game backgrounds the app, so the idle countdown has to be
+    // re-armed when the user comes back — the view is never rebuilt.
+    @Environment(\.scenePhase) private var scenePhase
     @State private var current = 0
     // Overscroll at the very top (positive when the page is pulled down). The
     // hero uses it to grow and fill the gap instead of exposing the backdrop.
@@ -3481,6 +3553,11 @@ struct LCHomeGalleryView: View {
     // translation now (see landscapeSwipe), so a drag can never be swallowed by
     // a scroll view writing the index back mid-gesture.
     @State private var dragX: CGFloat = 0
+    // Landscape "stage" mode: after two idle seconds the centred poster lifts
+    // out of the row, parks on the left and the row behind it is blurred, with
+    // the game's intro / release year / version on its right.
+    @State private var landscapeDetail = false
+    @State private var landscapeIdleTask: Task<Void, Never>?
 
     // Every installed app takes part in the hero carousel. It used to be capped
     // at five, which made the sixth icon in the rail jump back to the first
@@ -3537,15 +3614,27 @@ struct LCHomeGalleryView: View {
             // A turn mid-drag would otherwise leave the row parked off-centre.
             dragX = 0
             topBeadHidden = false
+            // The stage only exists on the landscape page.
+            landscapeDetail = false
+            armLandscapeIdle()
         }
         .onAppear {
             topBeadHidden = false
             restoreHeroSelection()
+            armLandscapeIdle()
+        }
+        .onChange(of: scenePhase) { phase in
+            // Back from a game (or from the background): start the two idle
+            // seconds again instead of leaving the stage unreachable.
+            if phase == .active { armLandscapeIdle() }
         }
         // Leaving the page (settings, the games tab) or launching a game only
         // HIDES the hero: nothing is torn down and nothing is looked up again,
         // and the poster that was selected is the one that comes back.
-        .onChange(of: current) { _ in rememberHeroSelection() }
+        .onChange(of: current) { _ in
+            rememberHeroSelection()
+            armLandscapeIdle()
+        }
         .onReceive(NotificationCenter.default.publisher(for: LCGallerySizeStore.sizeReady)) { _ in
             sizeTick += 1
         }
@@ -3844,15 +3933,129 @@ struct LCHomeGalleryView: View {
 
     // MARK: Landscape showcase — three posters per page, hand-swiped
 
-    // Landscape is its own screen: exactly three framed posters per page with
-    // their mirror image puddling underneath, no auto-advance, no dock.
-    //
-    // Width decides the card. Each poster gets a third of the safe width minus
-    // the two gaps — that is what "three per page" means — and only then is the
-    // height whatever the mirrored copy leaves.
+    // MARK: Landscape stage — two idle seconds lift the poster out of the row
+
+    // Restart the idle countdown. Two seconds with no swipe, tap or launch and
+    // the centred poster detaches, parks on the left and the row recedes.
+    private func armLandscapeIdle() {
+        landscapeIdleTask?.cancel()
+        landscapeIdleTask = nil
+        guard verticalSizeClass == .compact, !apps.isEmpty, !searchExpanded else { return }
+        landscapeIdleTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.spring(response: 0.50, dampingFraction: 0.86)) {
+                landscapeDetail = true
+            }
+        }
+    }
+
+    // Any operation cancels the countdown. `rearm` decides whether it starts
+    // again afterwards: a tap or a page change does, launching a game does not.
+    private func dismissLandscapeDetail(rearm: Bool) {
+        landscapeIdleTask?.cancel()
+        landscapeIdleTask = nil
+        if landscapeDetail {
+            withAnimation(.easeOut(duration: 0.24)) { landscapeDetail = false }
+        }
+        if rearm { armLandscapeIdle() }
+    }
+
+    // The stage: the poster on the left at its own (much larger) size, the
+    // official intro / release year / version on the right, the row blurred
+    // behind. Rendered as its own layer instead of moving the row's card, so
+    // the two can be sized independently and the exit stays a clean fade.
+    @ViewBuilder
+    private func landscapeDetailLayer(_ app: LCAppModel, in viewport: CGSize) -> some View {
+        let inset: CGFloat = 22
+        let gap: CGFloat = 26
+        let barH = landscapeBarHeight
+        let reflShare: CGFloat = 0.24
+
+        // Height decides everything: poster plus its mirror has to fit between
+        // the insets, and the width follows from the 16:9 cover.
+        let cardH = (viewport.height - inset * 2) / (1 + reflShare)
+        let cardW = min((cardH - barH) * 16 / 9, viewport.width * 0.46)
+        let realH = cardW * 9 / 16 + barH
+        let reflH = realH * reflShare
+        let cardTop = (viewport.height - (realH + reflH)) / 2
+        let textX = inset + cardW + gap
+        let textW = max(150, viewport.width - textX - inset)
+        let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
+        // Where the card appears to come from: the row's centred slot, at the
+        // row's size. Both are read once, so the insert transition reads as the
+        // poster growing out of the row rather than a cut.
+        let entryDrop = viewport.width / 2 - (inset + cardW / 2)
+        let entryScale = landscapeCardSize(in: viewport).width / cardW
+
+        ZStack(alignment: .topLeading) {
+            // Tapping anywhere off the poster brings the row back.
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture { dismissLandscapeDetail(rearm: true) }
+
+            landscapePosterCard(app: app, width: cardW, height: realH, isCurrent: true)
+                .frame(width: cardW, height: realH)
+                .offset(x: inset, y: cardTop)
+                .transition(.asymmetric(
+                    insertion: .scale(scale: entryScale)
+                        .combined(with: .offset(x: entryDrop))
+                        .combined(with: .opacity),
+                    removal: .opacity
+                ))
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(app.displayName)
+                    .font(.system(size: 27, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    if let year = meta.year {
+                        detailChip("calendar", "\(year) 年")
+                    }
+                    if app.version != "?" {
+                        detailChip("shippingbox", "v\(app.version)")
+                    }
+                }
+                .padding(.top, 12)
+
+                Text(meta.intro)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(.white.opacity(0.74))
+                    .lineSpacing(3.5)
+                    .lineLimit(6)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 14)
+            }
+            .frame(width: textW, alignment: .leading)
+            .frame(height: viewport.height, alignment: .center)
+            .offset(x: textX)
+            .transition(.opacity)
+        }
+        .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
+    }
+
+    // Year / version pill on the stage.
+    private func detailChip(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+            Text(text)
+                .font(.system(size: 11.5, weight: .semibold))
+        }
+        .foregroundStyle(.white.opacity(0.88))
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(Color.white.opacity(0.13)))
+        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
+    }
+
     private func landscapeCardSize(in viewport: CGSize) -> CGSize {
         let sideMargin: CGFloat = 16
-        let spacing: CGFloat = 12
+        let spacing = landscapeCardGap
         let topGap: CGFloat = 8
         let bottomGap: CGFloat = 8
 
@@ -3884,6 +4087,11 @@ struct LCHomeGalleryView: View {
     // Height of the liquid-glass strip under the cover: icon, name and 运行.
     private var landscapeBarHeight: CGFloat { 58 }
 
+    // Gap between two posters. 12 read as "touching" once the centred card
+    // started scaling up: the visible gap collapsed to ~6pt. At 22 the gap to
+    // the enlarged card is ~17pt again.
+    private var landscapeCardGap: CGFloat { 22 }
+
     // Corner radius of a landscape card. The artwork reaches the edge on its
     // own — no rim, no stroke — so this radius is the whole silhouette.
     private var landscapeCardRadius: CGFloat { 22 }
@@ -3906,9 +4114,13 @@ struct LCHomeGalleryView: View {
         0.86 + 0.32 * focus
     }
 
+    // Landscape is its own screen: exactly three posters per page with their
+    // mirror image puddling underneath, no auto-advance, no dock. Width decides
+    // the card — a third of the safe width minus the two gaps — and only then
+    // is the height whatever the mirrored copy leaves.
     private func landscapeShowcase(in viewport: CGSize) -> some View {
         let size = landscapeCardSize(in: viewport)
-        let spacing: CGFloat = 12
+        let spacing = landscapeCardGap
         let reflH = landscapeReflectionHeight(for: size.height)
         // Index 0 already sits centred, so every step further along the row is
         // exactly one card-width plus one gap.
@@ -3926,20 +4138,33 @@ struct LCHomeGalleryView: View {
         // plain arithmetic — and lets the drag rubber-band at the two ends.
         let rowX = -CGFloat(index) * step + dragX
 
-        return VStack(spacing: 0) {
-            Spacer(minLength: 8)
-            HStack(spacing: spacing) {
-                landscapeCards(size: size, spacing: spacing)
+        return ZStack {
+            VStack(spacing: 0) {
+                Spacer(minLength: 8)
+                HStack(spacing: spacing) {
+                    landscapeCards(size: size, spacing: spacing)
+                }
+                .padding(.horizontal, sidePad)
+                .frame(width: viewport.width, alignment: .leading)
+                .offset(x: rowX)
+                .frame(width: viewport.width, height: size.height)
+                .contentShape(Rectangle())
+                .gesture(landscapeSwipe(step: step, count: count))
+                // Room for the mirror, so the composition (card + reflection) is
+                // what ends up centred on the screen.
+                Spacer(minLength: reflH + 10)
             }
-            .padding(.horizontal, sidePad)
-            .frame(width: viewport.width, alignment: .leading)
-            .offset(x: rowX)
-            .frame(width: viewport.width, height: size.height)
-            .contentShape(Rectangle())
-            .gesture(landscapeSwipe(step: step, count: count))
-            // Room for the mirror, so the composition (card + reflection) is
-            // what ends up centred on the screen.
-            Spacer(minLength: reflH + 10)
+            .frame(width: viewport.width, height: viewport.height)
+            // Once the stage is up the row is only a backdrop, so it recedes:
+            // blurred and dimmed as one layer instead of per card.
+            .blur(radius: landscapeDetail ? 16 : 0)
+            .opacity(landscapeDetail ? 0.34 : 1)
+            .animation(.easeInOut(duration: 0.32), value: landscapeDetail)
+
+            if landscapeDetail, index < apps.count {
+                landscapeDetailLayer(apps[index], in: viewport)
+                    .zIndex(2)
+            }
         }
         .frame(width: viewport.width, height: viewport.height)
     }
@@ -3950,6 +4175,12 @@ struct LCHomeGalleryView: View {
     private func landscapeSwipe(step: CGFloat, count: Int) -> some Gesture {
         DragGesture(minimumDistance: 5)
             .onChanged { value in
+                // A finger on the row is an operation: put the stage away and
+                // stop the idle countdown. The guard keeps this from running
+                // again on every frame of the same drag.
+                if landscapeDetail || landscapeIdleTask != nil {
+                    dismissLandscapeDetail(rearm: false)
+                }
                 var t = value.translation.width
                 // Rubber band at both ends, so the row has stops instead of
                 // sliding the posters off into nothing.
@@ -3965,6 +4196,7 @@ struct LCHomeGalleryView: View {
                 guard abs(dx) > abs(value.translation.height)
                         || abs(predicted) > abs(value.predictedEndTranslation.height) else {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { dragX = 0 }
+                    armLandscapeIdle()
                     return
                 }
                 // A quarter of a card is enough, and the predicted end makes a
@@ -3978,6 +4210,8 @@ struct LCHomeGalleryView: View {
                     current = target
                     dragX = 0
                 }
+                // The new page gets its own two seconds before the stage opens.
+                armLandscapeIdle()
             }
     }
 
@@ -3996,17 +4230,25 @@ struct LCHomeGalleryView: View {
             landscapePosterCard(app: app, width: size.width, height: size.height,
                                 isCurrent: index == current)
                 .scaleEffect(landscapeFocusScale(focus), anchor: .center)
-                .opacity(0.62 + 0.38 * focus)
+                // While the stage is up the centred poster is drawn by
+                // landscapeDetailLayer instead, so this copy steps aside — a
+                // blurred duplicate behind the real one would show through.
+                .opacity(landscapeDetail && index == current ? 0 : 0.62 + 0.38 * focus)
                 .zIndex(Double(focus))
                 .contentShape(RoundedRectangle(cornerRadius: landscapeCardRadius, style: .continuous))
                 // Tapping any poster walks it to the middle — the row is a
                 // picker, not a slideshow that only a swipe can drive.
                 .onTapGesture {
-                    guard index != current else { return }
+                    dismissLandscapeDetail(rearm: false)
+                    guard index != current else {
+                        armLandscapeIdle()
+                        return
+                    }
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
                         current = index
                         dragX = 0
                     }
+                    armLandscapeIdle()
                 }
                 .id(index)
         }
@@ -4047,14 +4289,10 @@ struct LCHomeGalleryView: View {
         }
         .frame(width: width, height: height)
         .shadow(color: .black.opacity(0.45), radius: 20, y: 12)
-        // Selection is lit, not outlined: the chosen card emits white light —
-        // two stacked white shadows at different radii — and every other card
-        // emits nothing. With the rim gone this halo plus the scale is what
-        // marks the focus.
-        .shadow(color: Color.white.opacity(isCurrent ? 0.34 : 0),
-                radius: isCurrent ? 24 : 0)
-        .shadow(color: Color.white.opacity(isCurrent ? 0.16 : 0),
-                radius: isCurrent ? 8 : 0)
+        // No halo on the selected card any more: a glowing white bloom around
+        // the poster read as an outline stuck onto the artwork. Selection is
+        // carried by size, brightness of the card itself and the fact that the
+        // stage lifts it out of the row.
         .overlay(alignment: .bottom) {
             if reflH > 4 {
                 landscapeMirror(cover: cover, key: key,
@@ -4074,8 +4312,8 @@ struct LCHomeGalleryView: View {
     }
 
     // The liquid-glass strip under the cover. Structurally the portrait row:
-    // icon on the left, name in the middle, tinted 运行 capsule on the right —
-    // so both orientations read as the same app in two layouts.
+    // icon on the left, name in the middle, round controller button on the
+    // right — so both orientations read as the same app in two layouts.
     private func landscapeInfoBar(app: LCAppModel, width: CGFloat, height: CGFloat,
                                   tint: Color) -> some View {
         let icon = app.appInfo.iconIsDarkIcon(false)
@@ -4094,16 +4332,21 @@ struct LCHomeGalleryView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             Spacer(minLength: 4)
+            // Round, icon-only CTA: a controller glyph in the game's own tint.
+            // The word 运行 is gone — the shape says "play" and the text was
+            // eating the strip's width on a narrow card.
             Button {
+                dismissLandscapeDetail(rearm: false)
                 onLaunch(app)
             } label: {
-                Text("运行")
-                    .font(.system(size: 12.5, weight: .semibold))
+                Image(systemName: "gamecontroller.fill")
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 62, height: 31)
+                    .frame(width: 34, height: 34)
                     .lcTintedGlassCapsule(tint: tint)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("运行 \(app.displayName)")
         }
         .padding(.horizontal, 12)
         .frame(width: width, height: height)
