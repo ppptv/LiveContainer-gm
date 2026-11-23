@@ -3859,8 +3859,11 @@ struct LCHomeGalleryView: View {
         let availW = max(240, viewport.width - 2 * sideMargin)
         let availH = max(180, viewport.height - topGap - bottomGap)
 
-        // Exactly three posters across one page.
+        // Exactly three posters across one page. The width is what is fixed by
+        // the viewport now: the cover follows 16:9 from there instead of the
+        // old 2:3 portrait crop, and the info bar underneath is budgeted in.
         let cardW = (availW - 2 * spacing) / 3
+        let barH = landscapeBarHeight
 
         // The mirror under the card is 22% of its height (capped at 100pt), so
         // card + reflection together have to fit the free height.
@@ -3870,9 +3873,21 @@ struct LCHomeGalleryView: View {
         // it gains half upwards and half downwards — budget the card at the
         // SELECTED size and the row can no longer poke out of the screen.
         let selectedScale = landscapeFocusScale(1)
-        let cardH = min(cardW / 0.66, (availH - 14) / ((1 + reflShare) * selectedScale))
-        return CGSize(width: cardW, height: max(cardH, 140))
+        let maxCardH = (availH - 14) / ((1 + reflShare) * selectedScale)
+        // The visible cover is the INNER width — 8pt of rim on both sides — at
+        // exactly 16:9; the glass strip and the rim are added on top of it.
+        let innerW = cardW - landscapeRimWidth * 2
+        let natural = innerW * 9.0 / 16.0 + barH + landscapeRimWidth * 2
+        return CGSize(width: cardW,
+                      height: max(min(natural, maxCardH), barH + landscapeRimWidth * 2 + 60))
     }
+
+    // Height of the liquid-glass strip under the cover: icon, name and 运行.
+    private var landscapeBarHeight: CGFloat { 56 }
+
+    // The glass rim around a landscape poster, and its corner radius.
+    private var landscapeRimWidth: CGFloat { 8 }
+    private var landscapeRimRadius: CGFloat { 30 }
 
     // Height of the mirrored copy below a card of the given height. A touch
     // taller than before (24%, capped at 100pt): the reflection needs enough
@@ -3996,11 +4011,9 @@ struct LCHomeGalleryView: View {
         }
     }
 
-    // One portrait poster: artwork edge to edge inside a liquid-glass frame,
-    // the caption band progressively frosted, icon at the bottom-left and the
-    // same tinted run capsule the list rows use at the bottom-right.
-    // `isCurrent` drives the selection frame — the card the page is centred on
-    // gets a bright, thicker rim and a soft white halo; the others stay dim.
+    // One 16:9 poster inside a liquid-glass frame, with the icon, name and 运行
+    // on their own glass strip underneath. `isCurrent` drives the selection —
+    // the card the page is centred on is larger and lit, the others stay dim.
     private func landscapePosterCard(app: LCAppModel, width: CGFloat, height: CGFloat,
                                      isCurrent: Bool) -> some View {
         let key = app.appInfo.bundleIdentifier() ?? app.displayName
@@ -4009,11 +4022,10 @@ struct LCHomeGalleryView: View {
         // to come from now; see `LCGalleryOnlineCoverStore.fetchCover`.
         let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
         let tint = LCGalleryColorStore.shared.color(for: app)
-        let icon = app.appInfo.iconIsDarkIcon(false)
         // Chunky liquid-glass frame: 8pt of glass all round, so the border reads
         // as a real physical rim instead of a hairline.
-        let rimWidth: CGFloat = 8
-        let rim: CGFloat = 30
+        let rimWidth = landscapeRimWidth
+        let rim = landscapeRimRadius
         let innerRadius = rim - rimWidth
         let inner = CGSize(width: width - rimWidth * 2, height: height - rimWidth * 2)
         let reflH = landscapeReflectionHeight(for: height)
@@ -4024,85 +4036,18 @@ struct LCHomeGalleryView: View {
             landscapeCardArt(cover: cover, key: key,
                              size: CGSize(width: width, height: height),
                              innerSize: inner, rim: rim, rimWidth: rimWidth,
-                             isCurrent: isCurrent, tint: tint)
+                             isCurrent: isCurrent, tint: tint,
+                             barHeight: landscapeBarHeight)
 
-            ZStack(alignment: .bottom) {
-                // Frosted caption band that ramps in instead of starting on a
-                // hard edge. Masked material is the only way to get a true
-                // progressive blur over the artwork.
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .mask(
-                        LinearGradient(stops: [
-                            .init(color: .clear, location: 0.0),
-                            .init(color: .black.opacity(0.30), location: 0.38),
-                            .init(color: .black.opacity(0.85), location: 0.74),
-                            .init(color: .black, location: 1.0)
-                        ], startPoint: .top, endPoint: .bottom)
-                    )
-                    .allowsHitTesting(false)
-
-                // Contrast scrim on top of the frost, so white type survives
-                // both bright and dark artwork.
-                LinearGradient(stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: Color.black.opacity(0.20), location: 0.58),
-                    .init(color: Color.black.opacity(0.60), location: 1.0)
-                ], startPoint: .top, endPoint: .bottom)
-                .allowsHitTesting(false)
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(app.displayName)
-                        // Smaller than it was: the poster is the subject, the
-                        // name is a label on it. 21pt read as a headline.
-                        .font(.system(size: 17, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.72)
-                        .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
-                    // The one-line intro is gone here too: the poster already
-                    // says what the game is, and the second block of type only
-                    // fought the artwork.
-
-                    HStack(spacing: 10) {
-                        if let icon {
-                            Image(uiImage: icon)
-                                .resizable().scaledToFill()
-                                .frame(width: 34, height: 34)
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .stroke(Color.white.opacity(0.45), lineWidth: 1))
-                                .shadow(color: .black.opacity(0.35), radius: 5, y: 2)
-                        }
-                        Spacer(minLength: 0)
-                        Button {
-                            onLaunch(app)
-                        } label: {
-                            Text("运行")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 66, height: 34)
-                                .lcTintedGlassCapsule(tint: tint)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.top, 2)
-                }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 14)
-                .frame(width: inner.width, alignment: .leading)
-            }
-            .frame(width: inner.width, height: inner.height)
-            .clipShape(RoundedRectangle(cornerRadius: innerRadius, style: .continuous))
-            // The caption band is a full-card layer whose alpha is decided by a
-            // gradient — that is the only way to get a progressive frost. In
-            // light mode the system's own `.ultraThinMaterial` turns into white
-            // glass, so the band washed the artwork under a white haze from the
-            // middle of the poster upwards (the gradient starts at 38% height,
-            // not at the very bottom). Pinned to the dark scheme the material
-            // renders as the ink-grey frost it is in dark mode, the covers stay
-            // crisp, and only the rim keeps following the system.
-            .environment(\.colorScheme, .dark)
+            // Icon, name and 运行 live on their own liquid-glass strip BELOW
+            // the artwork now — the same arrangement as a portrait list row.
+            // The artwork itself carries no frost, no scrim and no gradient any
+            // more: it is a clean 16:9 cover edge to edge.
+            landscapeInfoBar(app: app, width: inner.width, height: landscapeBarHeight,
+                             tint: tint)
+                .frame(width: inner.width, height: inner.height, alignment: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: innerRadius, style: .continuous))
+                .environment(\.colorScheme, .dark)
         }
         .frame(width: width, height: height)
         .shadow(color: .black.opacity(0.45), radius: 20, y: 12)
@@ -4133,6 +4078,57 @@ struct LCHomeGalleryView: View {
         }
     }
 
+    // The liquid-glass strip under the cover. Structurally the portrait row:
+    // icon on the left, name in the middle, tinted 运行 capsule on the right —
+    // so both orientations read as the same app in two layouts.
+    private func landscapeInfoBar(app: LCAppModel, width: CGFloat, height: CGFloat,
+                                  tint: Color) -> some View {
+        let icon = app.appInfo.iconIsDarkIcon(false)
+        return HStack(spacing: 9) {
+            if let icon {
+                Image(uiImage: icon)
+                    .resizable().scaledToFill()
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.white.opacity(0.42), lineWidth: 1))
+            }
+            Text(app.displayName)
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Spacer(minLength: 4)
+            Button {
+                onLaunch(app)
+            } label: {
+                Text("运行")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 60, height: 30)
+                    .lcTintedGlassCapsule(tint: tint)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 11)
+        .frame(width: width, height: height)
+        // Liquid glass, not a flat slab: it refracts whatever sits behind the
+        // card exactly like the rim around the artwork does. A thin ink veil
+        // keeps white type legible on a pale backdrop, and the hairline marks
+        // where the cover ends and the strip begins.
+        .background {
+            Rectangle()
+                .fill(.clear)
+                .glassEffect(.regular, in: Rectangle())
+                .overlay(Color.black.opacity(0.20))
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(height: 0.8)
+                }
+        }
+    }
+
     // The physical part of a poster: glass rim with the artwork inset on top of
     // it, so only the rim stays visible. Kept as its own view because the
     // mirror has to reflect the same object — frame included. Reflecting the
@@ -4141,8 +4137,13 @@ struct LCHomeGalleryView: View {
     // and faded anyway, so a second real glass render only costs GPU time.
     private func landscapeCardArt(cover: UIImage, key: String, size: CGSize,
                                   innerSize: CGSize, rim: CGFloat, rimWidth: CGFloat,
-                                  isCurrent: Bool, tint: Color, mirror: Bool = false) -> some View {
-        ZStack {
+                                  isCurrent: Bool, tint: Color, mirror: Bool = false,
+                                  barHeight: CGFloat = 0) -> some View {
+        // The cover keeps an exact 16:9 crop; the strip below it belongs to the
+        // card, so the mirror reflects the same silhouette (a flat dark band
+        // instead of live glass — it is blurred and faded down there anyway).
+        let artH = max(1, innerSize.height - barHeight)
+        return ZStack {
             if mirror {
                 RoundedRectangle(cornerRadius: rim, style: .continuous)
                     .fill(Color.white.opacity(0.14))
@@ -4173,13 +4174,22 @@ struct LCHomeGalleryView: View {
                     )
             }
 
-            Image(uiImage: cover)
-                .resizable()
-                .scaledToFill()
-                .frame(width: innerSize.width, height: innerSize.height)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: rim - rimWidth, style: .continuous))
-                .id("poster-\(key)-\(coverTick)\(mirror ? "-mirror" : "")")
+            VStack(spacing: 0) {
+                Image(uiImage: cover)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: innerSize.width, height: artH)
+                    .clipped()
+                    .id("poster-\(key)-\(coverTick)\(mirror ? "-mirror" : "")")
+                // Space the info strip occupies. On the card the live glass bar
+                // is laid over it; in the mirror it is a flat band, so the
+                // reflection ends with the strip instead of the artwork.
+                Rectangle()
+                    .fill(mirror ? Color.black.opacity(0.34) : Color.clear)
+                    .frame(width: innerSize.width, height: barHeight)
+            }
+            .frame(width: innerSize.width, height: innerSize.height)
+            .clipShape(RoundedRectangle(cornerRadius: rim - rimWidth, style: .continuous))
         }
         .frame(width: size.width, height: size.height)
     }
@@ -4193,7 +4203,7 @@ struct LCHomeGalleryView: View {
                                  isCurrent: Bool, tint: Color, height: CGFloat) -> some View {
         landscapeCardArt(cover: cover, key: key, size: size, innerSize: innerSize,
                          rim: rim, rimWidth: rimWidth, isCurrent: isCurrent,
-                         tint: tint, mirror: true)
+                         tint: tint, mirror: true, barHeight: landscapeBarHeight)
             .scaleEffect(x: 1, y: -1, anchor: .center)
             .frame(width: size.width, height: height, alignment: .top)
             .clipped()
