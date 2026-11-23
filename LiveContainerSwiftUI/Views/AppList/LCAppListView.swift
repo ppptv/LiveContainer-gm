@@ -1721,11 +1721,21 @@ private struct LCITunesResult: Codable {
     let releaseDate: String?
 }
 
-// Everything the landscape detail panel says about a game besides its name and
-// version: the official one-paragraph intro and the year it came out.
+// Everything the landscape detail panel says about a game: the official short
+// intro plus the storefront's own spec table (platform, languages, publisher,
+// genre, rating) and the release year.
 struct LCGalleryGameMeta: Codable, Equatable {
     var intro: String
     var year: String?
+    var platform: String?
+    var languages: String?
+    var publisher: String?
+    var genre: String?
+    var rating: String?
+    // 1 once the spec table has been looked up. Entries written before the
+    // specs existed have no marker, so they get one silent re-fetch instead of
+    // showing an empty panel forever.
+    var specVersion: Int?
 }
 
 // Building a query string by hand and then handing it to `URL(string:)` is a
@@ -1998,6 +2008,13 @@ final class LCGalleryOnlineCoverStore {
     //   3) the name as typed, whenever it already carries Latin letters.
     // A pure-CJK name is never sent to the index on its own: it can only ever
     // return zero hits, and the round trip delays the fallback by seconds.
+    // Exposed for the meta store: it queries the same storefront for the game
+    // specs, and the alias table that turns a Chinese title into an English
+    // query already lives here.
+    static func nintendoQueriesOpen(for name: String) async -> [String] {
+        await nintendoQueries(for: name)
+    }
+
     private static func nintendoQueries(for name: String) async -> [String] {
         let latin = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
         var queries: [String] = []
@@ -2282,9 +2299,17 @@ final class LCGalleryMetaStore {
     // instantly on every later launch, exactly like the covers.
     func gameMeta(for app: LCAppModel) -> LCGalleryGameMeta {
         let key = Self.key(for: app)
-        if let hit = cache[key] { return hit }
+        if let hit = cache[key] {
+            // Written before the spec table was part of the panel: keep showing
+            // what we have and quietly upgrade it in the background.
+            if hit.specVersion == nil { request(name: app.displayName, key: key) }
+            return hit
+        }
         loadDiskIfNeeded()
-        if let stored = cache[key] { return stored }
+        if let stored = cache[key] {
+            if stored.specVersion == nil { request(name: app.displayName, key: key) }
+            return stored
+        }
         let local = Self.localIntro(for: app)
         request(name: app.displayName, key: key)
         return LCGalleryGameMeta(intro: local.isEmpty ? Self.fallback : local, year: nil)
@@ -2297,7 +2322,7 @@ final class LCGalleryMetaStore {
             let meta = await Self.fetchMeta(forName: name)
             await MainActor.run {
                 self.inFlight.remove(key)
-                if let meta = meta, !meta.intro.isEmpty {
+                if let meta = meta, !meta.intro.isEmpty || meta.platform != nil {
                     self.cache[key] = meta
                     self.persist()
                     NotificationCenter.default.post(name: Self.metaReady, object: key)
@@ -2353,7 +2378,171 @@ final class LCGalleryMetaStore {
         return ""
     }
 
+    // Two sources, in parallel: the Chinese short intro from the App Store
+    // lookup, and the spec table from Nintendo's own storefront — the same
+    // index the poster already comes from. Either one may come back empty.
     private static func fetchMeta(forName name: String) async -> LCGalleryGameMeta? {
+        async let introPart = fetchIntro(forName: name)
+        async let specPart = fetchSpecs(forName: name)
+        let intro = await introPart
+        let specs = await specPart
+        guard intro != nil || specs != nil else { return nil }
+        var meta = LCGalleryGameMeta(intro: intro ?? "")
+        meta.specVersion = 1
+        if let specs {
+            meta.year = specs.year
+            meta.platform = specs.platform
+            meta.languages = specs.languages
+            meta.publisher = specs.publisher
+            meta.genre = specs.genre
+            meta.rating = specs.rating
+        }
+        return meta
+    }
+
+    // MARK: - Official spec table (Nintendo storefront)
+
+    private struct LCSpecs {
+        var year: String?
+        var platform: String?
+        var languages: String?
+        var publisher: String?
+        var genre: String?
+        var rating: String?
+    }
+
+    private struct LCNintendoDateTag: Codable {
+        let day: Int?
+        let month: Int?
+        let year: Int?
+    }
+
+    private struct LCNintendoGame: Codable {
+        let title: String?
+        let console: String?
+        let publisher: String?
+        let genre: [String]?
+        let classification: String?
+        let fullURL: String?
+        let dateTag: LCNintendoDateTag?
+    }
+
+    private struct LCNintendoGameResponse: Codable {
+        let hits: [LCNintendoGame]?
+    }
+
+    private static let nintendoURL =
+        URL(string: "https://FMW57F6ERV-dsn.algolia.net/1/indexes/prod_games/query")!
+    private static let nintendoPageBase = "https://www.nintendo.com/au"
+
+    private static func fetchSpecs(forName name: String) async -> LCSpecs? {
+        for query in await LCGalleryOnlineCoverStore.nintendoQueriesOpen(for: name) {
+            guard let hit = await nintendoGame(query: query, name: name) else { continue }
+            var specs = LCSpecs()
+            // "Nintendo Switch 2" → "任天堂 Switch 2": the row is read at a
+            // glance next to Chinese labels, so the brand is localised. Every
+            // other value is printed exactly as the store prints it.
+            specs.platform = hit.console?
+                .replacingOccurrences(of: "Nintendo Switch", with: "任天堂 Switch")
+            specs.publisher = hit.publisher
+            specs.rating = hit.classification
+            if let year = hit.dateTag?.year, year > 1970 { specs.year = String(year) }
+            if let genre = hit.genre, !genre.isEmpty {
+                specs.genre = genre.map { genreNames[$0] ?? $0.capitalized }
+                    .joined(separator: "、")
+            }
+            // The storefront's own spec table is the only place the language
+            // list lives; the search index does not carry it.
+            if let url = hit.fullURL.flatMap({ URL(string: nintendoPageBase + $0) }),
+               let html = await page(url) {
+                if let raw = specValue(html, "Supported languages") {
+                    specs.languages = localizeLanguages(raw)
+                }
+                if specs.publisher == nil { specs.publisher = specValue(html, "Publisher") }
+            }
+            return specs
+        }
+        return nil
+    }
+
+    private static func nintendoGame(query: String, name: String) async -> LCNintendoGame? {
+        guard let url = URL(string: nintendoURL.absoluteString) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        request.httpMethod = "POST"
+        request.setValue("FMW57F6ERV", forHTTPHeaderField: "X-Algolia-Application-Id")
+        request.setValue("c8e4e9f60190ef785d167da77ba0b4fe", forHTTPHeaderField: "X-Algolia-API-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "query": query, "hitsPerPage": 6
+        ])
+        guard let (data, _) = try? await session.data(for: request),
+              let response = try? JSONDecoder().decode(LCNintendoGameResponse.self, from: data),
+              let hits = response.hits else { return nil }
+        let ranked = hits
+            .map { (score: LCGalleryOnlineCoverStore.matchScoreOpen(name, $0.title ?? ""), hit: $0) }
+            .filter { $0.score >= 0.5 }
+            .sorted { $0.score > $1.score }
+        return ranked.first?.hit
+    }
+
+    private static func page(_ url: URL) async -> String? {
+        guard let (data, _) = try? await session.data(from: url),
+              let html = String(data: data, encoding: .utf8) else { return nil }
+        return html
+    }
+
+    // The spec table is a two-column list of divs; the label cell is the one
+    // carrying `md:tw-w-[296px]`, its value is the cell right after it. Matching
+    // on that pair is far steadier than trying to walk the DOM.
+    private static func specValue(_ html: String, _ label: String) -> String? {
+        let pattern = "md:tw-w-\\[296px\\][^>]*>\\s*"
+            + NSRegularExpression.escapedPattern(for: label)
+            + "\\s*</div>\\s*<div[^>]*text-fixed-body-16[^>]*>(.*?)</div>"
+        guard let rx = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+              let match = rx.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+              let range = Range(match.range(at: 1), in: html) else { return nil }
+        let text = String(html[range])
+            .replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    // The storefront is the AU one, so its language names are English.
+    private static let languageNames: [String: String] = [
+        "english": "英语", "japanese": "日语", "french": "法语", "german": "德语",
+        "italian": "意大利语", "spanish": "西班牙语", "korean": "韩语",
+        "portuguese": "葡萄牙语", "russian": "俄语", "dutch": "荷兰语",
+        "polish": "波兰语", "turkish": "土耳其语", "arabic": "阿拉伯语",
+        "thai": "泰语", "vietnamese": "越南语", "indonesian": "印尼语",
+        "ukrainian": "乌克兰语", "czech": "捷克语", "hungarian": "匈牙利语",
+        "greek": "希腊语", "romanian": "罗马尼亚语", "swedish": "瑞典语",
+        "norwegian": "挪威语", "danish": "丹麦语", "finnish": "芬兰语",
+        "chinese (simplified)": "简体中文", "chinese (traditional)": "繁体中文",
+        "simplified chinese": "简体中文", "traditional chinese": "繁体中文"
+    ]
+
+    private static func localizeLanguages(_ raw: String) -> String? {
+        let parts = raw.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map { languageNames[$0.lowercased()] ?? $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "、")
+    }
+
+    // eShop genre codes → the names the Chinese storefront prints.
+    private static let genreNames: [String: String] = [
+        "ACTION": "动作", "ADVENTURE": "冒险", "RPG": "角色扮演",
+        "PLATFORMERS": "平台", "RACING": "竞速", "PARTY": "派对",
+        "PUZZLE": "益智", "SPORTS": "体育", "FIGHTING": "格斗",
+        "SHOOTING": "射击", "SIMULATION": "模拟", "STRATEGY": "策略",
+        "MUSIC": "音乐", "ARCADE": "街机", "BOARD_GAME": "桌游",
+        "EDUCATION": "教育", "FITNESS": "健身", "TRAINING": "训练",
+        "LIFESTYLE": "生活", "OTHER": "其他", "BEAT_'EM_UP": "格斗"
+    ]
+
+    private static func fetchIntro(forName name: String) async -> String? {
         let query = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return nil }
         for country in ["cn", "us"] {
@@ -2367,22 +2556,12 @@ final class LCGalleryMetaStore {
                 .filter { $0.score >= 0.45 }
                 .sorted { $0.score > $1.score }
             guard let best = ranked.first?.item else { continue }
-            // The detail panel has room for a paragraph, not a single line.
-            let intro = oneLine(best.description ?? "", limit: 132)
+            // 39 characters: the panel shows a short blurb, not a paragraph.
+            let intro = oneLine(best.description ?? "", limit: 39)
             guard !intro.isEmpty else { continue }
-            return LCGalleryGameMeta(intro: intro, year: year(from: best.releaseDate))
+            return intro
         }
         return nil
-    }
-
-    // "2019-08-29T07:00:00Z" → "2019". Anything implausible is dropped, so the
-    // panel omits the chip instead of printing junk.
-    private static func year(from releaseDate: String?) -> String? {
-        guard let raw = releaseDate, raw.count >= 4 else { return nil }
-        let head = String(raw.prefix(4))
-        guard head.allSatisfy({ $0.isNumber }),
-              let value = Int(head), value > 1970, value < 2100 else { return nil }
-        return head
     }
 
     // Collapse to readable text, strip HTML, cap length.
@@ -2392,9 +2571,9 @@ final class LCGalleryMetaStore {
             .replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        // Only the short (hero) variant is cut back to one sentence; the detail
-        // panel wants the opening paragraph to breathe.
-        if limit <= 28 {
+        // Only the short variants are cut back to one sentence; anything longer
+        // keeps its own punctuation.
+        if limit <= 48 {
             if let stop = text.range(of: "。") { text = String(text[..<stop.upperBound]) }
             if let stop = text.range(of: ". ") { text = String(text[..<stop.lowerBound]) }
             text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3980,7 +4159,13 @@ struct LCHomeGalleryView: View {
         let cardW = min((cardH - stripH - pad) * 16 / 9 + pad * 2, viewport.width * 0.47)
         let realH = pad + (cardW - pad * 2) * 9 / 16 + stripH
         let reflH = realH * reflShare
-        let cardTop = (viewport.height - (realH + reflH)) / 2
+        // The POSTER is what has to look centred, not poster plus reflection.
+        // Centring the pair left the card ~35pt above the middle, which read as
+        // "hanging from the top". 47% keeps it optically centred and still
+        // leaves the mirror on screen.
+        let cardCenterY = viewport.height * 0.47
+        let cardTop = max(margin, min(cardCenterY - realH / 2,
+                                      viewport.height - margin - realH))
         let textX = margin + cardW + gap
         let textW = max(150, viewport.width - textX - margin)
         let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
@@ -4024,20 +4209,54 @@ struct LCHomeGalleryView: View {
                 }
                 .padding(.top, 12)
 
-                Text(meta.intro)
-                    .font(.system(size: 13.5))
-                    .foregroundStyle(.white.opacity(0.74))
-                    .lineSpacing(3.5)
-                    .lineLimit(6)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 14)
+                // 39 characters at most: one short blurb, not a paragraph.
+                if !meta.intro.isEmpty {
+                    Text(meta.intro)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineSpacing(3.5)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 13)
+                }
+
+                // The storefront's own spec table, filled in as it arrives.
+                VStack(alignment: .leading, spacing: 7) {
+                    specRow("平台", meta.platform)
+                    specRow("支持的语言", meta.languages)
+                    specRow("发行商", meta.publisher)
+                    specRow("类型", meta.genre)
+                    specRow("年龄评级", meta.rating)
+                }
+                .padding(.top, 14)
             }
             .frame(width: textW, alignment: .leading)
             .frame(height: viewport.height, alignment: .center)
-            .offset(x: textX)
+            .offset(x: textX, y: cardCenterY - viewport.height / 2)
             .transition(.opacity)
         }
         .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
+    }
+
+    // One row of the official spec table. Rows without a value disappear, so a
+    // game the storefront has not described yet shows nothing rather than empty
+    // labels.
+    @ViewBuilder
+    private func specRow(_ label: String, _ value: String?) -> some View {
+        if let value, !value.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(label)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .frame(width: 62, alignment: .leading)
+                Text(value)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.white.opacity(0.86))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        }
     }
 
     // Year / version pill on the stage.
