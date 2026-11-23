@@ -1753,6 +1753,12 @@ final class LCGalleryOnlineCoverStore {
     func cover(for app: LCAppModel, wide: Bool) -> UIImage? {
         let key = Self.key(for: app)
         if let hit = (wide ? wideCache[key] : cache[key]) { return hit }
+        // Resolved in an earlier launch: read the file that was written back
+        // then. No translation, no storefront query, no image download.
+        if let stored = Self.coverFromDisk(key, wide: wide) {
+            if wide { wideCache[key] = stored } else { cache[key] = stored }
+            return stored
+        }
         request(name: app.displayName, key: key, wide: wide)
         return nil
     }
@@ -1767,6 +1773,10 @@ final class LCGalleryOnlineCoverStore {
                 self.inFlight.remove(slot)
                 if let image {
                     if wide { self.wideCache[key] = image } else { self.cache[key] = image }
+                    // Remember it across launches. Without this the whole
+                    // lookup chain re-ran on every cold start even though the
+                    // official poster had already been found.
+                    Self.storeCoverOnDisk(image, key: key, wide: wide)
                     NotificationCenter.default.post(
                         name: LCGalleryCoverStore.coverReady,
                         object: key
@@ -1774,6 +1784,46 @@ final class LCGalleryOnlineCoverStore {
                 }
             }
         }
+    }
+
+    // MARK: - Persisted covers
+
+    // Caches/LCGalleryOnlineCovers/<p|w>-<hash>.img. One file per app and per
+    // aspect, written once, read back on every later launch.
+    private static let diskQueue = DispatchQueue(label: "lc.gallery.online.cover.disk",
+                                                 qos: .utility)
+
+    private static let diskDirectory: URL? = {
+        let fm = FileManager.default
+        guard let base = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else { return nil }
+        let dir = base.appendingPathComponent("LCGalleryOnlineCovers", isDirectory: true)
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir
+    }()
+
+    // A key can carry a relative bundle path ("online-Documents/…"), which is
+    // not a legal file name, so the file name is a hash of the key instead.
+    private static func diskURL(for key: String, wide: Bool) -> URL? {
+        guard let dir = diskDirectory else { return nil }
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in key.utf8 {
+            hash = (hash ^ UInt64(byte)) &* 0x100000001b3
+        }
+        let name = String(format: "%@-%016llx.img", wide ? "w" : "p", hash)
+        return dir.appendingPathComponent(name)
+    }
+
+    private static func coverFromDisk(_ key: String, wide: Bool) -> UIImage? {
+        guard let url = diskURL(for: key, wide: wide) else { return nil }
+        return UIImage(contentsOfFile: url.path)
+    }
+
+    private static func storeCoverOnDisk(_ image: UIImage, key: String, wide: Bool) {
+        guard let url = diskURL(for: key, wide: wide),
+              let data = image.jpegData(compressionQuality: 0.95) else { return }
+        diskQueue.async { try? data.write(to: url, options: .atomic) }
     }
 
     private static func key(for app: LCAppModel) -> String {
@@ -3414,7 +3464,10 @@ struct LCHomeGalleryView: View {
     @State private var sizeTick = 0
     @State private var metaTick = 0
     @State private var searchExpanded = false
-    @State private var heroTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    // The poster no longer rotates by itself. It used to advance every five
+    // seconds, which meant the game under the "运行游戏" button could change
+    // while the user was reaching for it. Switching is now only ever the user's
+    // own gesture: swipe the poster, or tap an icon in the rail.
     // Poster actions: long-press opens a menu, then one of these sheets runs.
     @State private var coverTarget: LCAppModel?
     @State private var coverMenuShown = false
@@ -3485,7 +3538,14 @@ struct LCHomeGalleryView: View {
             dragX = 0
             topBeadHidden = false
         }
-        .onAppear { topBeadHidden = false }
+        .onAppear {
+            topBeadHidden = false
+            restoreHeroSelection()
+        }
+        // Leaving the page (settings, the games tab) or launching a game only
+        // HIDES the hero: nothing is torn down and nothing is looked up again,
+        // and the poster that was selected is the one that comes back.
+        .onChange(of: current) { _ in rememberHeroSelection() }
         .onReceive(NotificationCenter.default.publisher(for: LCGallerySizeStore.sizeReady)) { _ in
             sizeTick += 1
         }
@@ -3758,15 +3818,16 @@ struct LCHomeGalleryView: View {
         return ZStack(alignment: .bottom) {
             heroBackground(width: width, height: height)
 
-            VStack(spacing: 8) {
+            VStack(spacing: 4) {
                 Spacer()
                 heroText(compact: false)
                 runButton(compact: false)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 12)
-                heroDots
-                    .padding(.top, 12)
-                Spacer().frame(height: 26)
+                    .padding(.top, 6)
+                // The page dots are gone: with the poster no longer rotating
+                // they only duplicated what the highlighted icon in the rail
+                // already shows. The bottom inset keeps the CTA off the fade.
+                Spacer().frame(height: 38)
             }
             .frame(width: width, height: height, alignment: .bottom)
         }
@@ -3779,7 +3840,6 @@ struct LCHomeGalleryView: View {
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
         )
-        .onReceive(heroTimer) { _ in advanceHero() }
     }
 
     // MARK: Landscape showcase — three posters per page, hand-swiped
@@ -4247,15 +4307,6 @@ struct LCHomeGalleryView: View {
         }
     }
 
-    private func advanceHero() {
-        // Landscape is a hand-swiped showcase, so the poster timer must not
-        // move cards under the user's finger.
-        guard verticalSizeClass != .compact, slideCount > 0, !searchExpanded else { return }
-        withAnimation(.easeInOut(duration: 0.45)) {
-            current = (current + 1) % slideCount
-        }
-    }
-
     // MARK: Custom poster (long-press the hero)
 
     private func requestCustomCover() {
@@ -4281,29 +4332,6 @@ struct LCHomeGalleryView: View {
                 .lcTintedGlassCapsule(tint: tint)
         }
         .buttonStyle(.plain)
-    }
-
-    // At most seven dots are drawn. With more apps the row becomes a sliding
-    // window around the current poster, so any app can be reached by swiping
-    // instead of the carousel dying after the fifth one.
-    private var dotRange: [Int] {
-        let maxDots = 7
-        guard slideCount > maxDots else { return Array(0..<slideCount) }
-        let start = min(max(0, current - maxDots / 2), slideCount - maxDots)
-        return Array(start..<(start + maxDots))
-    }
-
-    private var heroDots: some View {
-        HStack(spacing: 6) {
-            ForEach(dotRange, id: \.self) { i in
-                Capsule()
-                    .fill(i == current ? Color.white : Color.white.opacity(0.34))
-                    .frame(width: i == current ? 20 : 6, height: 6)
-                    .contentShape(Rectangle())
-                    .onTapGesture { goSlide(i) }
-            }
-        }
-        .animation(.easeInOut(duration: 0.25), value: current)
     }
 
     private var heroGesture: some Gesture {
@@ -4650,6 +4678,26 @@ struct LCHomeGalleryView: View {
     private func closeSearch() {
         searchExpanded = false
         searchContext.query = ""
+    }
+
+    // MARK: Selected poster memory
+
+    // Keyed by bundle id rather than by index: sorting, installing or removing
+    // an app shifts indices, a bundle id follows the game.
+    private static let heroSelectionKey = "LCGalleryHeroSelectedBundleID"
+
+    private func restoreHeroSelection() {
+        guard let bid = UserDefaults.standard.string(forKey: Self.heroSelectionKey),
+              !bid.isEmpty,
+              let index = apps.firstIndex(where: { $0.bundleIdentifier == bid }),
+              index != current else { return }
+        current = index
+    }
+
+    private func rememberHeroSelection() {
+        guard current >= 0, current < apps.count else { return }
+        UserDefaults.standard.set(apps[current].bundleIdentifier,
+                                  forKey: Self.heroSelectionKey)
     }
 
     private func goSlide(_ i: Int) {
