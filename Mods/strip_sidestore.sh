@@ -58,8 +58,22 @@ fwbin() {
     [ -n "$e" ] && [ -f "$1/$e" ] && echo "$1/$e"
 }
 
+# Capture the main executable's entitlements BEFORE re-signing. Signing the
+# app bundle recurses into the main binary and strips them; we restore after.
+ENT_TMP="$WORK/main_ent.xml"
+codesign -d --entitlements :- "$APP/LiveContainer" 2>/dev/null > "$ENT_TMP" || true
+HAS_ENT=0
+grep -q 'com.apple.developer.team-identifier' "$ENT_TMP" && HAS_ENT=1
+
 echo "--- re-sign inside out ---"
-while IFS= read -r -d '' f; do sign "$f"; done < <(find "$APP/Frameworks" -maxdepth 1 -name '*.dylib' -print0)
+# app bundle FIRST (it recurses into main), then nested components
+sign "$APP"
+for ext in "$APP"/PlugIns/*.appex; do
+    [ -d "$ext" ] || continue
+    bin="$ext/$(basename "$ext" .appex)"
+    [ -f "$bin" ] && sign "$bin"
+    sign "$ext"
+done
 for fw in "$APP"/Frameworks/*.framework; do
     for nested in "$fw"/Frameworks/*.framework; do
         [ -d "$nested" ] || continue
@@ -69,13 +83,16 @@ for fw in "$APP"/Frameworks/*.framework; do
     b=$(fwbin "$fw"); [ -n "$b" ] && sign "$b"
     sign "$fw"
 done
-for ext in "$APP"/PlugIns/*.appex; do
-    bin="$ext/$(basename "$ext" .appex)"
-    [ -f "$bin" ] && sign "$bin"
-    sign "$ext"
-done
-sign "$APP/LiveContainer"
-sign "$APP"
+while IFS= read -r -d '' f; do sign "$f"; done < <(find "$APP/Frameworks" -maxdepth 1 -name '*.dylib' -print0)
+
+# main binary LAST, re-apply captured entitlements
+if [ "$HAS_ENT" = "1" ]; then
+    codesign -f -s - --timestamp=none --entitlements "$ENT_TMP" "$APP/LiveContainer" >/dev/null 2>&1 || {
+        echo "SIGN FAIL main with entitlements"; exit 1; }
+    echo "  OK main entitlements preserved"
+else
+    sign "$APP/LiveContainer"
+fi
 
 mkdir -p "$(dirname "$OUT")"
 rm -f "$OUT"
