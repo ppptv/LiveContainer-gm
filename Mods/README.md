@@ -65,3 +65,25 @@ package.
 Signing is ad-hoc (no entitlements, no team), same as the official CI ipa,
 which is also unsigned (`zip` + `ldid -S""`). Both must be re-signed by
 SideStore/AltStore before installing.
+
+## strip_sidestore.sh — SideStore-free variant
+
+For every full build, produce a standalone LiveContainer with the built-in
+SideStore removed (e.g. to sign with your own developer certificate):
+
+```sh
+./Mods/strip_sidestore.sh                         # newest v*.ipa -> ...-无SideStore.ipa
+./Mods/strip_sidestore.sh in.ipa out.ipa          # explicit names
+```
+
+No source change is needed: `sideStoreExist` is resolved at runtime by checking
+whether `Frameworks/SideStoreApp.framework` exists, so removing that one
+directory automatically hides every SideStore entry in the UI. The script
+drops the framework, re-signs inside out, and verifies zip integrity, codesign,
+zero SideStore residue, and survival of the QuickBar injection / CoreData fix /
+gallery symbols. Output lands next to the source by default (ad-hoc signed).
+
+Expected size: ~6.6 MB (vs ~33.8 MB with SideStore). Note the resulting bundle
+still declares HealthKit, increased-memory-limit, get-task-allow, 128 keychain
+groups and two app groups in its entitlements — your App ID must enable those
+capabilities or the developer-certificate signature will be rejected.
