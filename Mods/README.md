@@ -4,7 +4,28 @@ This folder holds the parts of the mod that live **outside** the Xcode project:
 the two injected dylibs and the scripts that turn a Release build into
 sideloadable ipas.
 
-## build_all.sh — build BOTH variants every time
+## Which build script to use
+
+### build_from_baseline.sh — RECOMMENDED for self-install / self-update
+
+```sh
+./Mods/build_from_baseline.sh          # auto version, newest full IPA as baseline
+./Mods/build_from_baseline.sh 70       # explicit version
+```
+
+This builds both variants from the **verified v67 binary baseline**: it takes a
+known-good full IPA and only re-signs/repackages it, so the signing components
+stay byte-identical to v67. Use this when you rely on installing/updating
+LiveContainer from the built-in SideStore ("self-install"). It verifies the
+baseline hashes before building and refuses a drifted baseline.
+
+Why: `build_all.sh` recompiles from source, which swaps ZSign / TweakLoader /
+SideStoreSupport / main binary to freshly-built versions. On iOS 26 that broke
+self-install. v45–v67 all shipped the SAME ZSign (`b467ceffe77543da`); only the
+source rebuild changed it. If you need source changes (e.g. a UI tweak), use
+`build_all.sh`, but expect self-install to need re-verification.
+
+### build_all.sh — build BOTH variants from source
 
 ```sh
 ./Mods/build_all.sh          # auto version = (newest vN) + 1
