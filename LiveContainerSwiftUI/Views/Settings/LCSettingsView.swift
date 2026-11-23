@@ -202,6 +202,15 @@ struct LCSettingsView: View {
                 }
                 
                 Section{
+                    Toggle(isOn: Binding(
+                        get: {
+                            let d = LCUtils.appGroupUserDefault
+                            return d.object(forKey: "LCUseGalleryHome") == nil ? true : d.bool(forKey: "LCUseGalleryHome")
+                        },
+                        set: { LCUtils.appGroupUserDefault.set($0, forKey: "LCUseGalleryHome") }
+                    )) {
+                        Text("大卡片首页")
+                    }
                     Toggle(isOn: $dynamicColors) {
                         Text("lc.settings.dynamicColors".loc)
                     }
