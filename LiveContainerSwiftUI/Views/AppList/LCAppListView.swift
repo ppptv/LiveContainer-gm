@@ -3704,9 +3704,6 @@ struct LCHomeGalleryView: View {
     var onCustomSort: () -> Void
 
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    // Launching a game backgrounds the app, so the idle countdown has to be
-    // re-armed when the user comes back — the view is never rebuilt.
-    @Environment(\.scenePhase) private var scenePhase
     @State private var current = 0
     // Overscroll at the very top (positive when the page is pulled down). The
     // hero uses it to grow and fill the gap instead of exposing the backdrop.
@@ -3732,11 +3729,6 @@ struct LCHomeGalleryView: View {
     // translation now (see landscapeSwipe), so a drag can never be swallowed by
     // a scroll view writing the index back mid-gesture.
     @State private var dragX: CGFloat = 0
-    // Landscape "stage" mode: after two idle seconds the centred poster lifts
-    // out of the row, parks on the left and the row behind it is blurred, with
-    // the game's intro / release year / version on its right.
-    @State private var landscapeDetail = false
-    @State private var landscapeIdleTask: Task<Void, Never>?
 
     // Every installed app takes part in the hero carousel. It used to be capped
     // at five, which made the sixth icon in the rail jump back to the first
@@ -3793,26 +3785,16 @@ struct LCHomeGalleryView: View {
             // A turn mid-drag would otherwise leave the row parked off-centre.
             dragX = 0
             topBeadHidden = false
-            // The stage only exists on the landscape page.
-            landscapeDetail = false
-            armLandscapeIdle()
         }
         .onAppear {
             topBeadHidden = false
             restoreHeroSelection()
-            armLandscapeIdle()
-        }
-        .onChange(of: scenePhase) { phase in
-            // Back from a game (or from the background): start the two idle
-            // seconds again instead of leaving the stage unreachable.
-            if phase == .active { armLandscapeIdle() }
         }
         // Leaving the page (settings, the games tab) or launching a game only
         // HIDES the hero: nothing is torn down and nothing is looked up again,
         // and the poster that was selected is the one that comes back.
         .onChange(of: current) { _ in
             rememberHeroSelection()
-            armLandscapeIdle()
         }
         .onReceive(NotificationCenter.default.publisher(for: LCGallerySizeStore.sizeReady)) { _ in
             sizeTick += 1
@@ -3970,6 +3952,13 @@ struct LCHomeGalleryView: View {
                     Color.black.opacity(0.55)
                 ], startPoint: .top, endPoint: .bottom)
             }
+            // The frosted backdrop changes with the poster, and the page is
+            // almost entirely this colour. Swapping it on the pager's own 0.42s
+            // spring meant the whole screen changed hue in under half a second —
+            // a flash on every swipe. It dissolves on its own slow curve now,
+            // independently of how fast the row moves.
+            .animation(.easeInOut(duration: 1.15), value: current)
+            .animation(.easeInOut(duration: 1.15), value: coverTick)
         }
         .ignoresSafeArea()
     }
@@ -4112,168 +4101,6 @@ struct LCHomeGalleryView: View {
 
     // MARK: Landscape showcase — three posters per page, hand-swiped
 
-    // MARK: Landscape stage — two idle seconds lift the poster out of the row
-
-    // Restart the idle countdown. Two seconds with no swipe, tap or launch and
-    // the centred poster detaches, parks on the left and the row recedes.
-    private func armLandscapeIdle() {
-        landscapeIdleTask?.cancel()
-        landscapeIdleTask = nil
-        guard verticalSizeClass == .compact, !apps.isEmpty, !searchExpanded else { return }
-        landscapeIdleTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard !Task.isCancelled else { return }
-            withAnimation(.spring(response: 0.50, dampingFraction: 0.86)) {
-                landscapeDetail = true
-            }
-        }
-    }
-
-    // Any operation cancels the countdown. `rearm` decides whether it starts
-    // again afterwards: a tap or a page change does, launching a game does not.
-    private func dismissLandscapeDetail(rearm: Bool) {
-        landscapeIdleTask?.cancel()
-        landscapeIdleTask = nil
-        if landscapeDetail {
-            withAnimation(.easeOut(duration: 0.24)) { landscapeDetail = false }
-        }
-        if rearm { armLandscapeIdle() }
-    }
-
-    // The stage: the poster on the left at its own (much larger) size, the
-    // official intro / release year / version on the right, the row blurred
-    // behind. Rendered as its own layer instead of moving the row's card, so
-    // the two can be sized independently and the exit stays a clean fade.
-    @ViewBuilder
-    private func landscapeDetailLayer(_ app: LCAppModel, in viewport: CGSize) -> some View {
-        let margin: CGFloat = 22
-        let gap: CGFloat = 26
-        let pad = landscapeCardInset
-        let stripH = landscapeStripHeight
-        let reflShare: CGFloat = 0.24
-
-        // Height decides everything: plate plus its mirror has to fit between
-        // the margins, and the width follows back through the plate's own
-        // anatomy — 8pt of glass, a 16:9 cover, the title strip.
-        let cardH = (viewport.height - margin * 2) / (1 + reflShare)
-        let cardW = min((cardH - stripH - pad) * 16 / 9 + pad * 2, viewport.width * 0.47)
-        let realH = pad + (cardW - pad * 2) * 9 / 16 + stripH
-        let reflH = realH * reflShare
-        // The POSTER is what has to look centred, not poster plus reflection.
-        // Centring the pair left the card ~35pt above the middle, which read as
-        // "hanging from the top". 47% keeps it optically centred and still
-        // leaves the mirror on screen.
-        let cardCenterY = viewport.height * 0.47
-        let cardTop = max(margin, min(cardCenterY - realH / 2,
-                                      viewport.height - margin - realH))
-        let textX = margin + cardW + gap
-        let textW = max(150, viewport.width - textX - margin)
-        let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
-        // Where the card appears to come from: the row's centred slot, at the
-        // row's size. Both are read once, so the insert transition reads as the
-        // poster growing out of the row rather than a cut.
-        let entryDrop = viewport.width / 2 - (margin + cardW / 2)
-        let entryScale = landscapeCardSize(in: viewport).width / cardW
-
-        ZStack(alignment: .topLeading) {
-            // Tapping anywhere off the poster brings the row back.
-            Color.black.opacity(0.001)
-                .contentShape(Rectangle())
-                .onTapGesture { dismissLandscapeDetail(rearm: true) }
-
-            landscapePosterCard(app: app, width: cardW, height: realH, isCurrent: true)
-                .frame(width: cardW, height: realH)
-                .offset(x: margin, y: cardTop)
-                .transition(.asymmetric(
-                    insertion: .scale(scale: entryScale)
-                        .combined(with: .offset(x: entryDrop))
-                        .combined(with: .opacity),
-                    removal: .opacity
-                ))
-
-            VStack(alignment: .leading, spacing: 0) {
-                Text(app.displayName)
-                    .font(.system(size: 27, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    if let year = meta.year {
-                        detailChip("calendar", "\(year) 年")
-                    }
-                    if app.version != "?" {
-                        detailChip("shippingbox", "v\(app.version)")
-                    }
-                }
-                .padding(.top, 12)
-
-                // 39 characters at most: one short blurb, not a paragraph.
-                if !meta.intro.isEmpty {
-                    Text(meta.intro)
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(.white.opacity(0.74))
-                        .lineSpacing(3.5)
-                        .lineLimit(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 13)
-                }
-
-                // The storefront's own spec table, filled in as it arrives.
-                VStack(alignment: .leading, spacing: 7) {
-                    specRow("平台", meta.platform)
-                    specRow("支持的语言", meta.languages)
-                    specRow("发行商", meta.publisher)
-                    specRow("类型", meta.genre)
-                    specRow("年龄评级", meta.rating)
-                }
-                .padding(.top, 14)
-            }
-            .frame(width: textW, alignment: .leading)
-            .frame(height: viewport.height, alignment: .center)
-            .offset(x: textX, y: cardCenterY - viewport.height / 2)
-            .transition(.opacity)
-        }
-        .frame(width: viewport.width, height: viewport.height, alignment: .topLeading)
-    }
-
-    // One row of the official spec table. Rows without a value disappear, so a
-    // game the storefront has not described yet shows nothing rather than empty
-    // labels.
-    @ViewBuilder
-    private func specRow(_ label: String, _ value: String?) -> some View {
-        if let value, !value.isEmpty {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(label)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.45))
-                    .frame(width: 62, alignment: .leading)
-                Text(value)
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.white.opacity(0.86))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
-    // Year / version pill on the stage.
-    private func detailChip(_ symbol: String, _ text: String) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .semibold))
-            Text(text)
-                .font(.system(size: 11.5, weight: .semibold))
-        }
-        .foregroundStyle(.white.opacity(0.88))
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(Color.white.opacity(0.13)))
-        .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 0.8))
-    }
-
     private func landscapeCardSize(in viewport: CGSize) -> CGSize {
         let sideMargin = landscapeCardSideMargin
         let spacing = landscapeCardGap
@@ -4392,16 +4219,6 @@ struct LCHomeGalleryView: View {
                 Spacer(minLength: reflH + 10)
             }
             .frame(width: viewport.width, height: viewport.height)
-            // Once the stage is up the row is only a backdrop, so it recedes:
-            // blurred and dimmed as one layer instead of per card.
-            .blur(radius: landscapeDetail ? 16 : 0)
-            .opacity(landscapeDetail ? 0.34 : 1)
-            .animation(.easeInOut(duration: 0.32), value: landscapeDetail)
-
-            if landscapeDetail, index < apps.count {
-                landscapeDetailLayer(apps[index], in: viewport)
-                    .zIndex(2)
-            }
         }
         .frame(width: viewport.width, height: viewport.height)
     }
@@ -4410,21 +4227,22 @@ struct LCHomeGalleryView: View {
     // neighbour it was already heading towards. Velocity (the predicted end)
     // decides, like the system pager, so even a short flick turns the page.
     private func landscapeSwipe(step: CGFloat, count: Int) -> some Gesture {
-        DragGesture(minimumDistance: 5)
+        DragGesture(minimumDistance: 1)
             .onChanged { value in
-                // A finger on the row is an operation: put the stage away and
-                // stop the idle countdown. The guard keeps this from running
-                // again on every frame of the same drag.
-                if landscapeDetail || landscapeIdleTask != nil {
-                    dismissLandscapeDetail(rearm: false)
-                }
                 var t = value.translation.width
                 // Rubber band at both ends, so the row has stops instead of
                 // sliding the posters off into nothing.
                 if (current <= 0 && t > 0) || (current >= count - 1 && t < 0) {
                     t *= 0.24
                 }
-                dragX = t
+                // Written with an animation-free transaction on purpose. An
+                // implicit animation living on an ancestor interpolates every
+                // one of these per-frame writes, so the row trails the finger by
+                // a frame or two — felt as a hitch at the start of every swipe,
+                // and as a row that keeps drifting after the finger stops.
+                var tx = Transaction()
+                tx.animation = nil
+                withTransaction(tx) { dragX = t }
             }
             .onEnded { value in
                 let dx = value.translation.width
@@ -4433,7 +4251,6 @@ struct LCHomeGalleryView: View {
                 guard abs(dx) > abs(value.translation.height)
                         || abs(predicted) > abs(value.predictedEndTranslation.height) else {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { dragX = 0 }
-                    armLandscapeIdle()
                     return
                 }
                 // A quarter of a card is enough, and the predicted end makes a
@@ -4447,8 +4264,6 @@ struct LCHomeGalleryView: View {
                     current = target
                     dragX = 0
                 }
-                // The new page gets its own two seconds before the stage opens.
-                armLandscapeIdle()
             }
     }
 
@@ -4467,25 +4282,21 @@ struct LCHomeGalleryView: View {
             landscapePosterCard(app: app, width: size.width, height: size.height,
                                 isCurrent: index == current)
                 .scaleEffect(landscapeFocusScale(focus), anchor: .center)
-                // While the stage is up the centred poster is drawn by
-                // landscapeDetailLayer instead, so this copy steps aside — a
-                // blurred duplicate behind the real one would show through.
-                .opacity(landscapeDetail && index == current ? 0 : 0.62 + 0.38 * focus)
-                .zIndex(Double(focus))
+                .opacity(0.62 + 0.38 * focus)
+                // Ordering is a discrete decision, not a continuous one. A
+                // floating zIndex re-sorts the layer stack on every frame of a
+                // drag; the centred card simply stays on top and the neighbours
+                // never reorder at all.
+                .zIndex(index == current ? 1 : 0)
                 .contentShape(RoundedRectangle(cornerRadius: landscapeCardRadius, style: .continuous))
                 // Tapping any poster walks it to the middle — the row is a
                 // picker, not a slideshow that only a swipe can drive.
                 .onTapGesture {
-                    dismissLandscapeDetail(rearm: false)
-                    guard index != current else {
-                        armLandscapeIdle()
-                        return
-                    }
+                    guard index != current else { return }
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
                         current = index
                         dragX = 0
                     }
-                    armLandscapeIdle()
                 }
                 .id(index)
         }
@@ -4556,11 +4367,15 @@ struct LCHomeGalleryView: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
-                .shadow(color: .black.opacity(0.35), radius: 5, y: 1)
+                // Two shadows instead of a dark wash under the strip: a tight
+                // one that gives the glyphs an edge on light glass and a wide
+                // one that separates them from the backdrop. Invisible on its
+                // own — which is the point.
+                .shadow(color: .black.opacity(0.50), radius: 2.5, y: 1)
+                .shadow(color: .black.opacity(0.28), radius: 10, y: 2)
             Spacer(minLength: 6)
             // Round, icon-only CTA: a controller glyph in the game's own tint.
             Button {
-                dismissLandscapeDetail(rearm: false)
                 onLaunch(app)
             } label: {
                 Image(systemName: "gamecontroller.fill")
@@ -4642,17 +4457,12 @@ struct LCHomeGalleryView: View {
                 .frame(width: size.width, height: stripHeight)
                 .offset(y: size.height - stripHeight)
 
-            // Caption scrim. White type straight on bare glass disappears when
-            // the backdrop is pale, and a solid dark bar would read as the
-            // second bar this redesign is meant to remove — a gradient that
-            // only deepens over the last few points keeps the plate glass.
-            if !mirror {
-                LinearGradient(colors: [.clear, Color.black.opacity(0.34)],
-                               startPoint: .top, endPoint: .bottom)
-                    .frame(width: innerW, height: stripHeight + inset)
-                    .offset(x: inset, y: size.height - stripHeight - inset)
-                    .allowsHitTesting(false)
-            }
+            // No scrim over the strip. A darkening gradient lived here so white
+            // type survived pale artwork, but any wash strong enough to read as
+            // legible turned the bottom of the plate into a black band — the
+            // clean glass the plate is made of was gone. Legibility is carried
+            // by the label's own shadow now (see landscapeInfoBar), which costs
+            // the panel nothing.
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
