@@ -556,7 +556,14 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     // which if symlinked, the new tmp cannot be recreated (#1040, #1125) or the app may camplain about the tmp folder being a symlimk (#884)
 
     // Setup directories
-    NSArray *dirList = @[@"Library/Caches", @"Library/Cookies", @"Documents", @"SystemData"];
+    // `Library/Application Support` must be pre-created: CoreData does NOT create
+    // intermediate directories when adding a persistent store. If it is missing,
+    // addPersistentStore fails silently ("Failed to create file; code = 2") and
+    // the first save: throws "This NSPersistentStoreCoordinator has no
+    // persistent stores (unknown)" — that is how the built-in SideStore dies on
+    // launch, since its AltStore.sqlite lives exactly there.
+    NSArray *dirList = @[@"Library/Caches", @"Library/Cookies", @"Library/Application Support",
+                         @"Library/Preferences", @"Documents", @"SystemData"];
     for (NSString *dir in dirList) {
         NSString *dirPath = [newHomePath stringByAppendingPathComponent:dir];
         [fm createDirectoryAtPath:dirPath withIntermediateDirectories:YES attributes:nil error:nil];
