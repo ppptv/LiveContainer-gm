@@ -2917,81 +2917,76 @@ struct GalleryCardView: View {
 
     var body: some View {
         let appName = app.displayName
-        let cover = LCGalleryCoverStore.shared.cover(for: app)
+        let appVersion = app.version
+        let appSize = LCGallerySizeStore.shared.sizeText(for: app)
+        let icon = app.appInfo.iconIsDarkIcon(false)
         let tint = LCGalleryColorStore.shared.color(for: app)
         let containers = app.uiContainers
         let selectedContainer = app.uiSelectedContainer
         let isShared = app.uiIsShared
         let multitask = app.shouldLaunchInMultitaskMode
         let relative = app.appInfo.relativeBundlePath ?? ""
-        // Same anatomy as a landscape poster: a liquid-glass plate, the artwork
-        // inset inside it, and the title strip as the bottom edge of that same
-        // plate — name on the left, round controller button on the right.
-        let plateRadius: CGFloat = 22
-        let inset: CGFloat = 7
-        let innerRadius: CGFloat = plateRadius - inset
-        let stripHeight: CGFloat = 42
 
-        VStack(spacing: 0) {
-            // 16:9 cover. `Color.clear` + aspectRatio is what makes the height
-            // follow the grid column's width without measuring anything.
-            Color.clear
-                .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                .overlay {
-                    Image(uiImage: cover)
-                        .resizable()
-                        .scaledToFill()
-                }
-                .clipShape(RoundedRectangle(cornerRadius: innerRadius, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: innerRadius, style: .continuous)
-                        .stroke(Color.white.opacity(0.30), lineWidth: 1)
+        HStack(spacing: 12) {
+                if let ic = icon {
+                    Image(uiImage: ic).resizable().scaledToFill()
+                        .frame(width: 58, height: 58)
+                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
+                            .stroke(Color.white.opacity(0.4), lineWidth: 1))
+                        .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
                         .allowsHitTesting(false)
-                )
-                .id("card-cover-\(appName)-\(coverTick)")
-                .padding(.horizontal, inset)
-                .padding(.top, inset)
-
-            HStack(spacing: 8) {
-                Text(appName)
-                    .font(.system(size: 15, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.68)
-                    .shadow(color: .black.opacity(0.50), radius: 2.5, y: 1)
-                    .shadow(color: .black.opacity(0.28), radius: 10, y: 2)
-                Spacer(minLength: 4)
+                }
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(appName)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(appVersion)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.32), in: Capsule())
+                            .overlay(Capsule().stroke(Color.white.opacity(0.22), lineWidth: 0.6))
+                        Text(appSize)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.32), in: Capsule())
+                            .overlay(Capsule().stroke(Color.white.opacity(0.22), lineWidth: 0.6))
+                    }
+                }
+                .allowsHitTesting(false)
+                Spacer(minLength: 0)
                 Button {
                     onLaunch(app)
                 } label: {
-                    Image(systemName: "gamecontroller.fill")
+                    Text("运行")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 30, height: 30)
+                        .frame(width: 66, height: 34)
                         .lcTintedGlassCapsule(tint: tint)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("运行 \(appName)")
-            }
-            .padding(.horizontal, inset + 5)
-            .frame(height: stripHeight)
+                .contentShape(Rectangle())
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .lcGlassCard(cornerRadius: plateRadius)
-        .clipShape(RoundedRectangle(cornerRadius: plateRadius, style: .continuous))
+        .frame(height: compact ? 84 : 90)
+        .lcGlassCard(cornerRadius: 20)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: plateRadius, style: .continuous)
-                .stroke(
-                    LinearGradient(colors: [
-                        Color.white.opacity(0.46),
-                        Color.white.opacity(0.14),
-                        Color.white.opacity(0.28)
-                    ], startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1
-                )
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.20), lineWidth: 0.7)
                 .allowsHitTesting(false)
         )
-        .shadow(color: .black.opacity(0.32), radius: 14, y: 8)
+        .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
         .contentShape(Rectangle())
         .contextMenu {
             // Full native-equivalent menu, matching LCAppBannerViewController.makeContextMenu().
@@ -3734,9 +3729,6 @@ struct LCHomeGalleryView: View {
     // translation now (see landscapeSwipe), so a drag can never be swallowed by
     // a scroll view writing the index back mid-gesture.
     @State private var dragX: CGFloat = 0
-    // How far the portrait list has covered the pinned poster: 0 = poster fully
-    // visible, 1 = list at the top and the poster receded behind it.
-    @State private var heroFade: CGFloat = 0
 
     // Every installed app takes part in the hero carousel. It used to be capped
     // at five, which made the sixth icon in the rail jump back to the first
@@ -3851,158 +3843,55 @@ struct LCHomeGalleryView: View {
     // one that was laid out for the other orientation. Mutating it left the
     // grid with stale geometry after rotating back — the list showed up empty.
     private var portraitPage: some View {
-        ZStack(alignment: .top) {
-            // The poster is pinned to the top edge now: it does not travel with
-            // the page any more. Only the list moves, and scrolling up slides
-            // the list over the poster while the poster loses focus behind it.
-            pinnedHero
-
-            ScrollView(.vertical, showsIndicators: false) {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                // Hero is full-bleed; only the sections below use side padding.
+                hero
                 VStack(alignment: .leading, spacing: 0) {
-                    // The poster's own footprint. Empty, so it needs an explicit
-                    // hit shape; that is also where the replace-cover long
-                    // press lives now that the artwork no longer has a view of
-                    // its own in the hierarchy here.
-                    Color.clear
-                        .frame(height: heroHeight)
-                        .contentShape(Rectangle())
-                        .onLongPressGesture(minimumDuration: 0.55) { requestCustomCover() }
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        iconRail
-                        cardsSection
-                        hiddenSection
-                        // Clearance for the home indicator AND for the bead, which
-                        // floats in the bottom-right corner.
-                        Spacer(minLength: 96)
-                    }
-                    .padding(.horizontal, sideMargin)
-                    // From here down the list is a surface of its own: it ramps
-                    // in over 56pt so the moving edge is never a hard seam, then
-                    // stays solid. That is what makes scrolling read as the list
-                    // covering the poster, instead of the poster sliding out
-                    // from underneath a transparent list.
-                    .background(alignment: .top) { listSurface }
+                    iconRail
+                    cardsSection
+                    hiddenSection
+                    // Clearance for the home indicator AND for the bead, which
+                    // now floats in the bottom-right corner: without the extra
+                    // room the last card parked straight under it.
+                    Spacer(minLength: 96)
                 }
+                .padding(.horizontal, sideMargin)
             }
-            .ignoresSafeArea(edges: .top)
-            // Portrait stays night-side no matter what the system is set to.
-            // The page is built on artwork, not on system surfaces: everything
-            // from the caps to the frosted run pill is tuned against a dark
-            // card, and in light mode those materials flipped to white slabs
-            // sitting on a dark poster. Pinning the scheme here keeps every card
-            // the same fixed dark object in both settings; landscape
-            // deliberately does not inherit this (see galleryBackdrop).
-            .environment(\.colorScheme, .dark)
-            .simultaneousGesture(heroGesture)
-            // The old PreferenceKey reader never fired, which is why neither the
-            // pull-down fill nor the collapsing dock ever moved. ScrollGeometry
-            // is the supported way to observe this.
-            .onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y + geo.contentInsets.top
-            } action: { _, y in
-                let pull = max(0, -y)
-                if abs(pull - pullDown) > 0.5 {
-                    pullDown = min(pull, 340)
-                }
-                // How far the list has covered the poster. Fully receded once
-                // the list has travelled 85% of the poster's height, so the
-                // poster is gone by the time the first row reaches the top.
-                let fade = min(max(y / max(1, heroHeight * 0.85), 0), 1)
-                if abs(fade - heroFade) > 0.004 {
-                    heroFade = fade
-                }
-                // Plus bead follows the reading direction: it tucks away once
-                // the list is pulled upwards (content moving up, offset growing)
-                // and returns as soon as the finger reverses. 6pt of hysteresis
-                // keeps jitter from flickering it.
-                let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
-                lastScrollY = y
-                if y <= 6 {
-                    if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
-                } else if delta > 6 {
-                    if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
-                } else if delta < -6 {
-                    if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
-                }
-            }
-
-            // Name and run button live ABOVE the list, not on the poster, so
-            // they stay tappable while the poster is uncovered — the scroll
-            // view would otherwise swallow every tap meant for them. They fade
-            // out earlier than the artwork does.
-            heroCaption
         }
-    }
-
-    // MARK: Pinned poster (portrait)
-
-    // The night ink the list is painted in. Same value as the ambient backdrop,
-    // so the surface and the page never disagree.
-    private var nightInk: Color { Color(red: 0.02, green: 0.05, blue: 0.11) }
-
-    // Sharp poster, with a pre-blurred twin fading in over it. Animating the
-    // blur radius itself would re-run a 26pt gaussian pass on every scroll
-    // frame; cross-fading two static layers costs one composite.
-    //
-    // The frosted copy is masked off over the top of the poster, so the status
-    // bar area — and the strip of artwork behind it — never goes soft, not even
-    // once the list is fully scrolled up. The dimming veil stops at the same
-    // line for the same reason: the clock and the notch stay legible.
-    private var pinnedHero: some View {
-        ZStack(alignment: .top) {
-            portraitHero
-            portraitHero
-                .blur(radius: 26)
-                .opacity(heroFade)
-                .mask(heroTopExclusion)
-                .allowsHitTesting(false)
-            nightInk
-                .opacity(heroFade * 0.66)
-                .mask(heroTopExclusion)
-                .allowsHitTesting(false)
-        }
-        .frame(width: pageWidth, height: heroHeight, alignment: .top)
-    }
-
-    // Everything below ~11% of the poster's height, nothing above it.
-    private var heroTopExclusion: some View {
-        LinearGradient(stops: [
-            .init(color: .clear, location: 0.0),
-            .init(color: .clear, location: 0.11),
-            .init(color: .black, location: 0.25)
-        ], startPoint: .top, endPoint: .bottom)
-    }
-
-    // The list's own surface. Transparent at its top edge, solid 56pt below it.
-    // Not fully opaque on purpose: the poster keeps showing through as it dims,
-    // so the list reads as a sheet laid over it rather than a black wall.
-    private var listSurface: some View {
-        VStack(spacing: 0) {
-            LinearGradient(colors: [nightInk.opacity(0), nightInk.opacity(0.74)],
-                           startPoint: .top, endPoint: .bottom)
-                .frame(height: 56)
-            nightInk.opacity(0.74)
-        }
-    }
-
-    private var heroCaption: some View {
-        VStack(spacing: 4) {
-            Spacer(minLength: 0)
-            heroText(compact: false)
-            runButton(compact: false)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, 6)
-            // Keeps the CTA off the fade at the bottom of the artwork.
-            Spacer().frame(height: 38)
-        }
-        .frame(width: pageWidth, height: heroHeight)
-        .opacity(max(0, 1 - heroFade * 1.5))
-        .allowsHitTesting(heroFade < 0.12)
-        // The page pins the dark scheme (see portraitPage); this view sits
-        // outside the scroll view now, so it has to carry the same pin for the
-        // frosted run pill.
+        .ignoresSafeArea(edges: .top)
+        // Portrait stays night-side no matter what the system is set to. The
+        // page is built on artwork, not on system surfaces: everything from the
+        // caps to the frosted run pill is tuned against a dark card, and in
+        // light mode those materials flipped to white slabs sitting on a dark
+        // poster. Pinning the scheme here keeps every card the same fixed dark
+        // object in both settings; landscape deliberately does not inherit
+        // this, so it can follow the system (see galleryBackdrop).
         .environment(\.colorScheme, .dark)
+        // The old PreferenceKey reader never fired, which is why neither the
+        // pull-down fill nor the collapsing dock ever moved. ScrollGeometry
+        // is the supported way to observe this.
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y + geo.contentInsets.top
+        } action: { _, y in
+            let pull = max(0, -y)
+            if abs(pull - pullDown) > 0.5 {
+                pullDown = min(pull, 340)
+            }
+            // Plus bead follows the reading direction: it tucks away once the
+            // list is pulled upwards (content moving up, offset growing) and
+            // returns as soon as the finger reverses. 6pt of hysteresis keeps
+            // jitter from flickering it.
+            let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
+            lastScrollY = y
+            if y <= 6 {
+                if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
+            } else if delta > 6 {
+                if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
+            } else if delta < -6 {
+                if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
+            }
+        }
     }
 
     // MARK: Poster ownership
@@ -4168,6 +4057,8 @@ struct LCHomeGalleryView: View {
 
     // MARK: Hero carousel — full-bleed official poster, iOS 27 style
 
+    private var hero: some View { portraitHero }
+
     // Portrait width. There are no horizontal safe-area insets in portrait, so
     // the screen width is exactly the page width — and unlike a cached
     // measurement it can never be one rotation behind. Landscape takes its own
@@ -4181,15 +4072,31 @@ struct LCHomeGalleryView: View {
     private var portraitHero: some View {
         let width = pageWidth
         let height = heroHeight
-        // Artwork only. The name and the run button used to be stacked on top
-        // of it here, but the poster is pinned now and the list slides over it,
-        // so type living inside this layer would be buried by the scroll view.
-        // They are drawn above the list instead — see heroCaption.
-        return heroBackground(width: width, height: height)
-            // Bottom-aligned so the taller stretched background grows upwards
-            // and keeps its bottom edge glued to the hero. Not clipped on
-            // purpose: clipping here would cut exactly that fill.
+        return ZStack(alignment: .bottom) {
+            heroBackground(width: width, height: height)
+
+            VStack(spacing: 4) {
+                Spacer()
+                heroText(compact: false)
+                runButton(compact: false)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 6)
+                // The page dots are gone: with the poster no longer rotating
+                // they only duplicated what the highlighted icon in the rail
+                // already shows. The bottom inset keeps the CTA off the fade.
+                Spacer().frame(height: 38)
+            }
             .frame(width: width, height: height, alignment: .bottom)
+        }
+        // Bottom-aligned so the taller stretched background grows upwards and
+        // keeps its bottom edge glued to the hero. Not clipped on purpose:
+        // clipping here would cut exactly that fill.
+        .frame(width: width, height: height, alignment: .bottom)
+        .contentShape(Rectangle())
+        .gesture(heroGesture)
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
+        )
     }
 
     // MARK: Landscape showcase — three posters per page, hand-swiped
@@ -4713,13 +4620,6 @@ struct LCHomeGalleryView: View {
     private var heroGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { v in
-                // Only while the poster is still on screen. Once the list has
-                // covered it, a horizontal drag belongs to whatever is under
-                // the finger, not to the carousel — and the gesture is
-                // attached to the scroll view now, so it would otherwise fire
-                // from anywhere on the page.
-                guard heroFade < 0.2 else { return }
-                guard abs(v.translation.width) > abs(v.translation.height) else { return }
                 if v.translation.width < -36 { goSlide(current + 1) }
                 else if v.translation.width > 36 { goSlide(current - 1) }
             }
