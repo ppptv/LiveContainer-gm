@@ -1,8 +1,34 @@
 # Mods — QuickBar overlay + packaging
 
 This folder holds the parts of the mod that live **outside** the Xcode project:
-the two injected dylibs and the script that turns a Release build into a
-sideloadable ipa.
+the two injected dylibs and the scripts that turn a Release build into
+sideloadable ipas.
+
+## build_all.sh — build BOTH variants every time
+
+```sh
+./Mods/build_all.sh          # auto version = (newest vN) + 1
+./Mods/build_all.sh 69       # explicit version
+```
+
+One command compiles the injected dylibs, runs `xcodebuild` (unsigned), then
+produces **both** variants for the same source/build:
+
+1. `LiveContainer+SideStore-...-vN.ipa` — full build with built-in SideStore.
+2. `LiveContainer-独立版-无SideStore-vN.ipa` — same build with SideStore stripped,
+   for developer-certificate signing.
+
+Both land in the delivery folder (`~/…/QuickBar/`). The script verifies each
+one (zip, codesign, QuickBar injection, CoreData fix, gallery symbols, weak
+links) and refuses to overwrite an existing version.
+
+### assets/SideStoreApp.framework
+
+The built-in SideStore is **checked in** here so every build uses the exact same
+verified binary — no nightly download / dylibify step. It is SideStore 0.7.0,
+`SideStore` binary SHA256 prefix `075a8f72ce543932`, carrying the
+`INCREASED_MEMORY_LIMIT` / `bundleIdCapabilities` fix so a free Apple ID still
+gets the higher memory limit. `build_all.sh` refuses to run if this hash drifts.
 
 ## QuickBar/
 
