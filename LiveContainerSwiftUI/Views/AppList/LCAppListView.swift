@@ -1338,15 +1338,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    // Portrait bottom dock — one wide pale glass capsule with five icon-only
-    // tools. Apple-style 16pt side margins: the bar stretches close to the
-    // screen edges instead of floating as a small centred pill. Order follows
-    // the reference: home, list, install (soft pink centre), SideStore, sort.
-    // Every action reuses the proven LC handlers; only the shell is new.
+    // Portrait bottom dock — the compact three-slot control from the system
+    // reference: glyph over caption, with the centre tool held in its selected
+    // state. Actions still route through the original LC handlers.
     private var galleryDock: some View {
         HStack(spacing: 0) {
-            // SideStore: open it when installed, otherwise show help. No badge
-            // — every glyph in this bar carries the same plain styling.
+            // SideStore: open it when installed, otherwise show help.
             Menu {
                 if UserDefaults.sideStoreExist() {
                     Button {
@@ -1361,16 +1358,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     Task { await onOpenWebViewTapped() }
                 }
             } label: {
-                dockGlyph(symbol: "app.badge", label: "SideStore")
+                dockItemContent(symbol: "app.badge", label: "SideStore", selected: false)
             }
             .buttonStyle(.plain)
 
-            // Install: same colour and weight as the other two tools, no tinted
-            // pill. Tapping adds an app; the menu keeps the extra actions.
+            // Install is the default selected slot, like the middle tab in the
+            // system control. Tapping adds an app; the menu keeps extra actions.
             Menu {
                 installMenuItems
             } label: {
-                dockGlyph(symbol: "plus", label: "安装应用")
+                dockItemContent(symbol: "plus", label: "安装", selected: true)
             } primaryAction: {
                 choosingIPA = true
             }
@@ -1395,15 +1392,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     }
                 }
             } label: {
-                dockGlyph(symbol: "line.3.horizontal.decrease.circle", label: "排序")
+                dockItemContent(symbol: "line.3.horizontal.decrease.circle", label: "排序", selected: false)
             }
             .buttonStyle(.plain)
         }
-        // iOS 27 liquid frosted glass: three equal slots in a translucent
-        // capsule, no opaque backing and no coloured centre.
-        .padding(.horizontal, 6)
-        .frame(width: min(UIScreen.main.bounds.width - 96, 300))
-        .padding(.vertical, 5)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 6)
+        .frame(width: 234)
         .glassEffect(.regular, in: Capsule())
         .environment(\.colorScheme, .light)
         .padding(.bottom, 22)
@@ -1421,13 +1416,24 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    private func dockGlyph(symbol: String, label: String) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 19, weight: .medium))
-            .foregroundStyle(Color.black.opacity(0.80))
-            .frame(maxWidth: .infinity, minHeight: 42)
-            .contentShape(Capsule())
-            .accessibilityLabel(label)
+    private func dockItemContent(symbol: String, label: String, selected: Bool) -> some View {
+        let ink: Color = selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.black.opacity(0.86)
+        return VStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: selected ? .semibold : .medium))
+                .foregroundStyle(ink)
+                .frame(width: 56, height: 34)
+                .background(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Color.black.opacity(selected ? 0.09 : 0))
+                )
+            Text(label)
+                .font(.system(size: 10, weight: selected ? .semibold : .medium))
+                .foregroundStyle(ink)
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Capsule())
+        .accessibilityLabel(label)
     }
 
     // Left-side page switcher (software placeholder only). Game is the default
@@ -4129,7 +4135,6 @@ struct LCHomeGalleryView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 detailHeroHeader
-                detailInfoBlock
                 allGamesSection
                 if gameListLayout == 0 {
                     darkGameList
@@ -4158,20 +4163,6 @@ struct LCHomeGalleryView: View {
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
         )
-        // The floating search glyph sits over the artwork on the right.
-        .overlay(alignment: .topTrailing) {
-            Button { searchExpanded = true } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.92))
-                    .frame(width: 34, height: 34)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, sideMargin)
-            .padding(.top, 12)
-        }
     }
 
     // Shared scroll bookkeeping: elastic pull, plus-bead direction.
@@ -4366,7 +4357,11 @@ struct LCHomeGalleryView: View {
 
     // MARK: Cover header (fixed, about a third of the screen)
 
-    private var detailArtHeight: CGFloat { min(UIScreen.main.bounds.height * 0.32, 430) }
+    private var detailArtHeight: CGFloat { min(UIScreen.main.bounds.height * 0.31, 420) }
+    // The detail text and launch controls sit on the lower part of the artwork,
+    // over the same dissolve that used to stop at the image edge. That is what
+    // makes the name feel printed on the cover instead of parked underneath it.
+    private var detailInfoHeight: CGFloat { 132 }
 
     private static func shortPlatform(_ raw: String?) -> String {
         guard let raw else { return "NSW" }
@@ -4378,55 +4373,74 @@ struct LCHomeGalleryView: View {
 
     private var detailHeroHeader: some View {
         let h = detailArtHeight
+        let infoH = detailInfoHeight
         let page = Color(red: 0.02, green: 0.05, blue: 0.11)
-        // The artwork starts below the status bar so the Dynamic Island no
-        // longer sits on top of the key art. The gap is filled by a frosted
-        // band tinted with the cover's own dominant colour.
+        // The status-bar band and the artwork now share one continuous wash.
+        // Keeping them as two flat slabs was what produced the visible seam
+        // under the island; the band fades into the top of the cover instead.
         let gap: CGFloat = 54
         let tint: Color = current < apps.count
             ? LCGalleryColorStore.shared.color(for: apps[current])
             : Color(red: 0.12, green: 0.18, blue: 0.30)
-        return ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                ZStack {
-                    tint.opacity(0.42)
-                    Rectangle().fill(.ultraThinMaterial)
-                }
-                .frame(height: gap)
-                ZStack(alignment: .bottom) {
-                    if current < apps.count {
-                        let app = apps[current]
-                        let key = app.appInfo.bundleIdentifier() ?? "\(current)"
-                        Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: true)
-                              ?? LCGalleryCoverStore.shared.cover(for: app))
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: pageWidth, height: h)
-                            .clipped()
-                            .id("detail-\(key)-\(coverTick)")
-                            .transition(.opacity)
-                    } else {
-                        LinearGradient(colors: [
-                            Color(red: 0.09, green: 0.36, blue: 0.72),
-                            Color(red: 0.02, green: 0.08, blue: 0.18)
-                        ], startPoint: .top, endPoint: .bottom)
-                    }
-                    // Long, multi-stop dissolve: start earlier and taper gently
-                    // so the artwork never ends on a visible cut line.
-                    LinearGradient(stops: [
-                        .init(color: .clear, location: 0.0),
-                        .init(color: .clear, location: 0.18),
-                        .init(color: page.opacity(0.22), location: 0.46),
-                        .init(color: page.opacity(0.62), location: 0.74),
-                        .init(color: page.opacity(0.90), location: 0.92),
-                        .init(color: page, location: 1.0)
+        return VStack(spacing: 0) {
+            ZStack {
+                page
+                tint.opacity(0.58)
+                Rectangle().fill(.ultraThinMaterial)
+                // Dark at the very top for legible status glyphs, softening to
+                // nothing at the bottom edge where the cover takes over.
+                LinearGradient(stops: [
+                    .init(color: .black.opacity(0.30), location: 0.0),
+                    .init(color: .black.opacity(0.06), location: 0.58),
+                    .init(color: .clear, location: 1.0)
+                ], startPoint: .top, endPoint: .bottom)
+            }
+            .frame(width: pageWidth, height: gap)
+
+            // Cover runs on behind the detail block so the title and buttons
+            // are laid over the artwork's own gradient, not a separate card.
+            ZStack(alignment: .bottom) {
+                if current < apps.count {
+                    let app = apps[current]
+                    let key = app.appInfo.bundleIdentifier() ?? "\(current)"
+                    Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: true)
+                          ?? LCGalleryCoverStore.shared.cover(for: app))
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: pageWidth, height: h + infoH)
+                        .clipped()
+                        .id("detail-\(key)-\(coverTick)")
+                        .transition(.opacity)
+                } else {
+                    LinearGradient(colors: [
+                        Color(red: 0.09, green: 0.36, blue: 0.72),
+                        Color(red: 0.02, green: 0.08, blue: 0.18)
                     ], startPoint: .top, endPoint: .bottom)
                 }
-                .frame(width: pageWidth, height: h)
-                .clipped()
+                // Top of the cover picks up the band's colour, then clears so
+                // the artwork is untouched through its middle.
+                LinearGradient(stops: [
+                    .init(color: page.opacity(0.58), location: 0.0),
+                    .init(color: .clear, location: 0.16)
+                ], startPoint: .top, endPoint: .bottom)
+                // Long dissolve under the text. It begins before the title and
+                // reaches the page colour at the very bottom: no cut line, and
+                // every label sits on a dark, consistent wash.
+                LinearGradient(stops: [
+                    .init(color: .clear, location: 0.0),
+                    .init(color: .clear, location: 0.34),
+                    .init(color: page.opacity(0.34), location: 0.54),
+                    .init(color: page.opacity(0.72), location: 0.70),
+                    .init(color: page.opacity(0.94), location: 0.86),
+                    .init(color: page, location: 1.0)
+                ], startPoint: .top, endPoint: .bottom)
+
+                detailInfoBlock
             }
+            .frame(width: pageWidth, height: h + infoH)
+            .clipped()
         }
-        .frame(width: pageWidth, height: gap + h)
+        .frame(width: pageWidth, height: gap + h + infoH)
         .clipped()
         .animation(.easeInOut(duration: 0.42), value: current)
     }
@@ -4442,56 +4456,56 @@ struct LCHomeGalleryView: View {
         let version = app?.version ?? ""
         let tint: Color = app.map { LCGalleryColorStore.shared.color(for: $0) }
             ?? Color(red: 0.55, green: 0.62, blue: 0.78)
-        return VStack(alignment: .leading, spacing: 8) {
-            // The game name is the chip at the top of this block — the old
-            // "NSW · 已就绪" / "最近游玩" caption lines are gone.
-            HStack(spacing: 8) {
-                Text(en.isEmpty ? "全部游戏" : en)
-                    .font(.system(size: 26, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                HStack(spacing: 8) {
-                    Button {
-                        if let app { onLaunch(app) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.fill").font(.system(size: 12, weight: .bold))
-                            Text("启动").font(.system(size: 14, weight: .semibold))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 20).padding(.vertical, 11)
-                        .lcTintedGlassCapsule(tint: tint)
-                    }
-                    .buttonStyle(.plain)
-                    Menu {
-                        if let app {
-                            Button("更换封面", systemImage: "photo") {
-                                coverTarget = app
-                                coverMenuShown = true
-                            }
-                            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-                            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 38, height: 38)
-                            .background(.ultraThinMaterial, in: Circle())
-                            .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+        return VStack(alignment: .leading, spacing: 7) {
+            // Name owns the whole line. The launch pill used to share it and
+            // squeezed the title into an ellipsis; it now sits below the
+            // caption so the full name is always readable.
+            Text(en.isEmpty ? "全部游戏" : en)
+                .font(.system(size: 25, weight: .heavy))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.82)
             Text("\(zh) · v\(version) · \(genre)")
                 .font(.system(size: 12))
-                .foregroundStyle(.white.opacity(0.58))
+                .foregroundStyle(.white.opacity(0.68))
                 .lineLimit(1)
+            HStack(spacing: 8) {
+                Button {
+                    if let app { onLaunch(app) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "play.fill").font(.system(size: 12, weight: .bold))
+                        Text("启动").font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20).padding(.vertical, 11)
+                    .lcTintedGlassCapsule(tint: tint)
+                }
+                .buttonStyle(.plain)
+                Menu {
+                    if let app {
+                        Button("更换封面", systemImage: "photo") {
+                            coverTarget = app
+                            coverMenuShown = true
+                        }
+                        Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
+                        Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 3)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, sideMargin)
-        .padding(.top, 2)
-        .padding(.bottom, 18)
+        .padding(.bottom, 20)
     }
 
     // MARK: All games section + dark cards
@@ -4552,10 +4566,49 @@ struct LCHomeGalleryView: View {
         LazyVGrid(columns: [GridItem(.flexible(minimum: 0), spacing: 10),
                             GridItem(.flexible(minimum: 0), spacing: 10)], spacing: 10) {
             ForEach(Array(visibleApps.enumerated()), id: \.offset) { index, app in
-                darkGameRow(app: app, index: index, compact: true)
+                coverNameCard(app: app, active: index == current)
             }
         }
         .padding(.horizontal, sideMargin)
+    }
+
+    // Grid tab: the reference card is artwork first, with the name printed on
+    // a soft dark wash. No tile icon and no play glyph — the whole card is the
+    // launch target, as it is on the cover above.
+    @ViewBuilder
+    private func coverNameCard(app: LCAppModel, active: Bool) -> some View {
+        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
+        ZStack(alignment: .leading) {
+            Image(uiImage: cover)
+                .resizable().scaledToFill()
+                .frame(height: 94)
+                .clipped()
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.86), location: 0.0),
+                .init(color: .black.opacity(0.48), location: 0.55),
+                .init(color: .clear, location: 1.0)
+            ], startPoint: .leading, endPoint: .trailing)
+            Text(app.displayName)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .padding(.leading, 12)
+                .padding(.trailing, 22)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(height: 94)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(active ? 0.55 : 0.10), lineWidth: active ? 1.4 : 0.6)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture { onLaunch(app) }
+        .contextMenu {
+            Button("启动", systemImage: "play") { onLaunch(app) }
+            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
+            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
+        }
     }
 
     @ViewBuilder
