@@ -1378,18 +1378,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 
     private func homeModeChip(title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.system(size: 16, weight: active ? .semibold : .regular))
-                Text(title)
-                    .font(.system(size: 14, weight: active ? .semibold : .medium))
-            }
-            .foregroundStyle(active ? Color.black : Color.black.opacity(0.55))
-            .frame(width: 76, height: 42)
-            .background(active ? Color.white : Color.clear, in: Capsule())
-            .contentShape(Capsule())
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? Color.black : Color.black.opacity(0.55))
+                .frame(width: 48, height: 42)
+                .background(active ? Color.white : Color.clear, in: Capsule())
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // No visible label by design; keep the two controls named for VoiceOver.
+        .accessibilityLabel(title)
     }
 
     // Everything the old three-glyph pill could do, folded into one bead.
