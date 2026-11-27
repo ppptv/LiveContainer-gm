@@ -1397,10 +1397,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 5)
-        .padding(.vertical, 6)
-        .frame(width: 210)
+        .padding(.vertical, 7)
+        .frame(width: 240)
         .glassEffect(.regular, in: Capsule())
-        .padding(.bottom, 22)
+        .shadow(color: .black.opacity(0.28), radius: 18, y: 5)
+        // iOS 27 floating tab bar sits just above the home indicator, not
+        // floating high above the content like the earlier custom dock.
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder
@@ -1420,7 +1423,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         // the same blue in both so the active tool never disappears on glass.
         let ink: Color = selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.primary.opacity(0.86)
         return Image(systemName: symbol)
-            .font(.system(size: 19, weight: selected ? .semibold : .medium))
+            .font(.system(size: 21, weight: selected ? .semibold : .medium))
             .foregroundStyle(ink)
             .frame(width: round ? 44 : 52, height: 44)
             .background {
@@ -4172,30 +4175,11 @@ struct LCHomeGalleryView: View {
     private var headerHeight: CGFloat { coverArtHeight + detailInfoHeight }
     private var stretchedCoverHeight: CGFloat { coverArtHeight + min(pullDown * 0.26, 62) }
 
+    // One continuous surface: the artwork runs behind the title and launch
+    // button, then dissolves into the page colour. There is no separate flat
+    // band under the cover, so the two can no longer show a seam.
     private var fixedDetailHeader: some View {
-        let page = Color(red: 0.02, green: 0.05, blue: 0.11)
-        let tint: Color = current < apps.count
-            ? LCGalleryColorStore.shared.color(for: apps[current])
-            : Color(red: 0.12, green: 0.18, blue: 0.30)
-        return VStack(spacing: 0) {
-            detailHeroHeader(coverHeight: stretchedCoverHeight)
-            // Opaque title band: rows passing beneath disappear here, which is
-            // what makes the list read as sliding *under* the fixed title.
-            ZStack(alignment: .bottom) {
-                page
-                tint.opacity(0.20)
-                LinearGradient(stops: [
-                    .init(color: tint.opacity(0.28), location: 0),
-                    .init(color: page.opacity(0.24), location: 0.5),
-                    .init(color: page, location: 1)
-                ], startPoint: .top, endPoint: .bottom)
-                detailInfoBlock
-            }
-            .frame(width: pageWidth, height: detailInfoHeight)
-            .clipped()
-        }
-        .frame(width: pageWidth, height: stretchedCoverHeight + detailInfoHeight)
-        .clipped()
+        detailHeroHeader(coverHeight: stretchedCoverHeight)
     }
 
     // Shared scroll bookkeeping: elastic pull, plus-bead direction.
@@ -4402,6 +4386,10 @@ struct LCHomeGalleryView: View {
 
     private func detailHeroHeader(coverHeight: CGFloat) -> some View {
         let page = Color(red: 0.02, green: 0.05, blue: 0.11)
+        // The artwork keeps going all the way behind the launch button. The
+        // detail block floats on its own lower gradient instead of a flat
+        // colour slab, which was the visible seam in the previous build.
+        let artHeight = coverHeight + detailInfoHeight
         return ZStack(alignment: .bottom) {
             if current < apps.count {
                 let app = apps[current]
@@ -4409,7 +4397,7 @@ struct LCHomeGalleryView: View {
                 Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: true))
                     .resizable()
                     .scaledToFill()
-                    .frame(width: pageWidth, height: coverHeight)
+                    .frame(width: pageWidth, height: artHeight)
                     .clipped()
                     .id("detail-\(key)-\(coverTick)")
                     .transition(.opacity)
@@ -4420,19 +4408,28 @@ struct LCHomeGalleryView: View {
                 ], startPoint: .top, endPoint: .bottom)
             }
             // Status glyphs stay legible on bright artwork without a frosted
-            // band: a short, soft shade only, gone by the upper third.
+            // band: a short, soft shade only, gone by the upper fifth.
             LinearGradient(stops: [
                 .init(color: .black.opacity(0.34), location: 0.0),
-                .init(color: .black.opacity(0.08), location: 0.22),
-                .init(color: .clear, location: 0.38)
+                .init(color: .black.opacity(0.08), location: 0.12),
+                .init(color: .clear, location: 0.24)
             ], startPoint: .top, endPoint: .bottom)
-            // The artwork's lower edge eases into the title band below.
+            // Long, many-stop dissolve. It stays clear over the artwork, then
+            // deepens steadily through the title and buttons and lands exactly
+            // on the page colour at the bottom — no line, no separate band.
             LinearGradient(stops: [
-                .init(color: .clear, location: 0.86),
-                .init(color: page.opacity(0.62), location: 1.0)
+                .init(color: .clear, location: 0.0),
+                .init(color: .clear, location: 0.30),
+                .init(color: page.opacity(0.20), location: 0.44),
+                .init(color: page.opacity(0.54), location: 0.60),
+                .init(color: page.opacity(0.84), location: 0.76),
+                .init(color: page.opacity(0.96), location: 0.90),
+                .init(color: page, location: 1.0)
             ], startPoint: .top, endPoint: .bottom)
+
+            detailInfoBlock
         }
-        .frame(width: pageWidth, height: coverHeight)
+        .frame(width: pageWidth, height: artHeight)
         .clipped()
         // Only game switches animate; the pull stretch stays finger-tracked.
         .animation(.easeInOut(duration: 0.42), value: current)
@@ -4556,8 +4553,8 @@ struct LCHomeGalleryView: View {
     }
 
     private var darkGameGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible(minimum: 0), spacing: 6),
-                            GridItem(.flexible(minimum: 0), spacing: 6)], spacing: 6) {
+        LazyVGrid(columns: [GridItem(.flexible(minimum: 0), spacing: 14),
+                            GridItem(.flexible(minimum: 0), spacing: 14)], spacing: 14) {
             ForEach(Array(visibleApps.enumerated()), id: \.offset) { index, app in
                 coverNameCard(app: app, active: index == current)
             }
@@ -4581,14 +4578,20 @@ struct LCHomeGalleryView: View {
                 .init(color: .black.opacity(0.52), location: 0.72),
                 .init(color: .black.opacity(0.88), location: 1.0)
             ], startPoint: .top, endPoint: .bottom)
-            Text(app.displayName)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .padding(.leading, 12)
-                .padding(.trailing, 10)
-                .padding(.bottom, 11)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app.displayName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(LCGallerySizeStore.shared.sizeText(for: app))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 10)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(height: 102)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -4629,7 +4632,7 @@ struct LCHomeGalleryView: View {
                         Circle().fill(Color(red: 1.0, green: 0.32, blue: 0.36)).frame(width: 5, height: 5)
                     }
                 }
-                Text("\(en) · \(genre)")
+                Text("\(en) · \(genre) · \(LCGallerySizeStore.shared.sizeText(for: app))")
                     .font(.system(size: compact ? 10 : 12))
                     .foregroundStyle(.white.opacity(0.52))
                     .lineLimit(1)
