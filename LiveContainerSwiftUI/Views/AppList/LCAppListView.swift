@@ -108,7 +108,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State private var galleryDockSelection = 0
     // Shared with the gallery so the bottom dock's list/grid buttons and the
     // content view always reflect the same layout choice.
-    @State private var gameListLayout = 0
+    @State private var gameListLayout = 1
 
     // Gallery card context-menu uninstall target + confirmation.
     @State private var galleryUninstallApp: LCAppModel?
@@ -1380,10 +1380,11 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
                 .buttonStyle(.plain)
             }
-            .padding(.horizontal, 5)
-            .padding(.vertical, 5)
-            .glassEffect(.regular, in: Capsule())
-            .shadow(color: .black.opacity(0.24), radius: 14, y: 4)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 6)
+            .background(Color.white, in: Capsule())
+            .overlay(Capsule().stroke(Color.black.opacity(0.06), lineWidth: 1))
+            .shadow(color: .black.opacity(0.10), radius: 16, y: 5)
 
             Spacer(minLength: 12)
 
@@ -1406,12 +1407,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // highlighted so the current layout is obvious; SideStore stays neutral.
     private func dockGlyph(symbol: String, label: String, selected: Bool = false) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 19, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.primary)
+            .font(.system(size: 18, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? Color(red: 0.94, green: 0.45, blue: 0.57) : Color.primary)
             .frame(width: 46, height: 40)
             .background {
                 if selected {
-                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill(Color(red: 1.0, green: 0.93, blue: 0.95))
                 }
             }
             .contentShape(Capsule())
@@ -1424,14 +1425,16 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         Image(systemName: "plus")
             .font(.system(size: 22, weight: .heavy))
             .foregroundStyle(.white)
-            .frame(width: 50, height: 40)
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .glassEffect(
-                .regular.tint(Color(red: 1.0, green: 0.52, blue: 0.52).opacity(0.55)),
-                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .frame(width: 52, height: 52)
+            .background(
+                LinearGradient(colors: [
+                    Color(red: 0.99, green: 0.64, blue: 0.72),
+                    Color(red: 0.94, green: 0.44, blue: 0.57)
+                ], startPoint: .topLeading, endPoint: .bottomTrailing),
+                in: Circle()
             )
-            .shadow(color: Color(red: 1.0, green: 0.38, blue: 0.38).opacity(0.34),
-                    radius: 10, y: 3)
+            .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.30),
+                    radius: 12, y: 4)
             .accessibilityLabel("安装应用")
     }
 
@@ -4150,7 +4153,7 @@ struct LCHomeGalleryView: View {
         // Rebuild when the dock surface changes so a list scrolled to the
         // bottom cannot leave the home poster parked halfway off-screen.
         .id("portrait-\(dockSelection)")
-        .ignoresSafeArea(edges: .top)
+        .background(Color.white.ignoresSafeArea())
         // The gallery follows the system appearance now. The artwork and the
         // cards keep their own dark surfaces, while every glass control picks
         // up the user's light/dark setting instead of being pinned to one.
@@ -4170,13 +4173,16 @@ struct LCHomeGalleryView: View {
                 Spacer(minLength: 110)
             }
             .padding(.horizontal, sideMargin)
-            .padding(.top, 56)
+            .padding(.top, 16)
         }
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, y in
             trackScroll(y)
         }
+        // v2 feed is a white shopping-sheet: the blurred poster wash stays
+        // behind the landscape surface only, never under the portrait list.
+        .background(Color.white.ignoresSafeArea())
     }
 
     // Home: one continuous scroll surface. The poster, title band and list all
@@ -4184,20 +4190,17 @@ struct LCHomeGalleryView: View {
     // Pulling past the top still stretches the cover with a damped spring.
     private var homeDetailSurface: some View {
         ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                detailHeroHeader(coverHeight: stretchedCoverHeight)
-                // v2 feed furniture: zone switch, search row and category
-                // capsules. Each control routes to an existing LC action —
-                // nothing here invents a capability the app does not have.
-                feedZoneBar
-                feedSearchRow
-                feedCategoryChips
+            VStack(spacing: 0) {
+                shoppingHeader
+                shoppingSearchRow
+                shoppingFeatureBanner
+                shoppingFilterRow
                 if gameListLayout == 0 {
-                    darkGameList
+                    shoppingRows
                 } else {
-                    waterfallGrid
+                    shoppingGrid
                 }
-                Spacer(minLength: 130)
+                Spacer(minLength: 140)
             }
         }
         .onAppear { withAnimation(Motion.card) { feedAppeared = true } }
@@ -4207,8 +4210,8 @@ struct LCHomeGalleryView: View {
             heroScrollY = y
             trackScroll(y)
         }
-        // Horizontal drags on the artwork/page switch games; vertical drags
-        // still scroll the list, so only a clearly horizontal move counts.
+        // Swipe the featured card sideways to change the current game. Vertical
+        // drags still belong to the scroll view, so only horizontal moves count.
         .simultaneousGesture(
             DragGesture(minimumDistance: 24)
                 .onEnded { v in
@@ -4220,6 +4223,424 @@ struct LCHomeGalleryView: View {
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
         )
+        // Solid paper background. The reference has no blurred colour wash:
+        // the page, the cards and the gutters all share one clean white sheet.
+        .background(Color.white.ignoresSafeArea())
+    }
+
+    // MARK: - Reference shopping home (white, airy, pink accents)
+
+    // The reference is a white shopping feed: a quiet header, one search row,
+    // a single featured card, low-contrast filter chips, then a two-column
+    // product grid with generous gutters. Everything below keeps the proven LC
+    // actions — install plus, SideStore, launch, settings, uninstall.
+    private var shoppingHeader: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: [Color(red: 1.0, green: 0.66, blue: 0.73),
+                                 Color(red: 0.95, green: 0.45, blue: 0.58)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ))
+                Image(systemName: "square.grid.2x2.fill")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 36, height: 36)
+
+            Spacer(minLength: 0)
+
+            VStack(spacing: 2) {
+                Text("我的游戏库")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.primary)
+                Text("\(apps.count) 个应用")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+
+            // SideStore lives here as the avatar, exactly like the reference's
+            // profile picture. It is one more door to refresh, never the only one.
+            Button { onOpenSideStoreOrHelp() } label: {
+                Group {
+                    if let sideStoreIcon {
+                        Image(uiImage: sideStoreIcon)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "app.badge")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+                }
+                .frame(width: 38, height: 38)
+                .background(Color(uiColor: .systemGray6), in: Circle())
+                .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("打开 SideStore")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+    }
+
+    private var shoppingSearchRow: some View {
+        HStack(spacing: 10) {
+            Button { searchExpanded = true } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("搜索游戏、软件")
+                        .font(.system(size: 13))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Color.secondary)
+                .padding(.horizontal, 16)
+                .frame(height: 48)
+                .background(Color(uiColor: .systemGray6),
+                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Picker("Sort by", selection: Binding(
+                    get: { sortType },
+                    set: { onSortChange($0) }
+                )) {
+                    ForEach(AppSortType.allCases, id: \.self) { t in
+                        Label(t.displayName, systemImage: t.systemImage).tag(t)
+                    }
+                }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 48)
+                    .background(
+                        LinearGradient(colors: [
+                            Color(red: 0.99, green: 0.65, blue: 0.72),
+                            Color(red: 0.94, green: 0.44, blue: 0.57)
+                        ], startPoint: .topLeading, endPoint: .bottomTrailing),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("排序")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+    }
+
+    @ViewBuilder
+    private var shoppingFeatureBanner: some View {
+        if current < apps.count {
+            let app = apps[current]
+            let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
+            Button {
+                withAnimation(Motion.hero) { detailTarget = app }
+            } label: {
+                ZStack(alignment: .leading) {
+                    Image(uiImage: cover)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 158)
+                        .clipped()
+
+                    LinearGradient(stops: [
+                        .init(color: Color(red: 0.98, green: 0.48, blue: 0.59).opacity(0.98), location: 0.0),
+                        .init(color: Color(red: 0.98, green: 0.55, blue: 0.63).opacity(0.90), location: 0.46),
+                        .init(color: .clear, location: 0.82)
+                    ], startPoint: .leading, endPoint: .trailing)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("本周精选")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.92))
+                        Text(app.displayName)
+                            .font(.system(size: 22, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.82)
+                        HStack(spacing: 8) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("查看")
+                                    .font(.system(size: 11, weight: .bold))
+                            }
+                            .foregroundStyle(Color(red: 0.93, green: 0.40, blue: 0.53))
+                            .padding(.horizontal, 12)
+                            .frame(height: 28)
+                            .background(Color.white, in: Capsule())
+
+                            Text(LCGallerySizeStore.shared.sizeText(for: app))
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.86))
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.trailing, 86)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 158)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+        } else {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(Color(uiColor: .systemGray6))
+                .frame(height: 158)
+                .overlay(
+                    Text("安装第一个应用后，这里会出现精选卡片")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+        }
+    }
+
+    private var shoppingFilterRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 7) {
+                shoppingZoneChip("游戏", icon: "gamecontroller.fill", zone: 0)
+                shoppingZoneChip("软件", icon: "list.bullet", zone: 1)
+
+                Rectangle()
+                    .fill(Color.black.opacity(0.08))
+                    .frame(width: 1, height: 18)
+                    .padding(.horizontal, 2)
+
+                shoppingFilterChip("全部", 0)
+                shoppingFilterChip("最近", 1)
+                shoppingFilterChip("占用", 2)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 2)
+        }
+        .padding(.top, 20)
+    }
+
+    private func shoppingZoneChip(_ title: String, icon: String, zone: Int) -> some View {
+        let active = feedZone == zone
+        return Button {
+            withAnimation(Motion.chip) {
+                feedZone = zone
+                categoryFilter = 0
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .bold))
+            }
+            .foregroundStyle(active
+                ? Color(red: 0.93, green: 0.40, blue: 0.53)
+                : Color.primary)
+            .padding(.horizontal, 13)
+            .frame(height: 34)
+            .background(
+                active
+                    ? Color(red: 1.0, green: 0.92, blue: 0.94)
+                    : Color(uiColor: .systemGray6),
+                in: Capsule()
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title)分区")
+    }
+
+    private func shoppingFilterChip(_ title: String, _ filter: Int) -> some View {
+        let active = categoryFilter == filter
+        return Button {
+            withAnimation(Motion.chip) { categoryFilter = filter }
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(active ? Color.white : Color.secondary)
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .background(
+                    active
+                        ? Color(red: 0.95, green: 0.47, blue: 0.59)
+                        : Color(uiColor: .systemGray6),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var shoppingGrid: some View {
+        Group {
+            if feedApps.isEmpty {
+                shoppingEmptyState
+            } else {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(minimum: 0), spacing: 16),
+                    GridItem(.flexible(minimum: 0), spacing: 16)
+                ], spacing: 22) {
+                    ForEach(Array(feedApps.enumerated()), id: \.offset) { index, app in
+                        shoppingCard(app: app, index: index)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+    }
+
+    private var shoppingRows: some View {
+        Group {
+            if feedApps.isEmpty {
+                shoppingEmptyState
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(Array(feedApps.enumerated()), id: \.offset) { index, app in
+                        shoppingRow(app: app, index: index)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+    }
+
+    private var shoppingEmptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("这个分区还没有应用")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 54)
+    }
+
+    @ViewBuilder
+    private func shoppingCard(app: LCAppModel, index: Int) -> some View {
+        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
+        VStack(alignment: .leading, spacing: 10) {
+            Color.clear
+                .aspectRatio(0.92, contentMode: .fit)
+                .overlay(
+                    Image(uiImage: cover)
+                        .resizable()
+                        .scaledToFill()
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            HStack(alignment: .center, spacing: 7) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(app.displayName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.86)
+                    Text(LCGallerySizeStore.shared.sizeText(for: app))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button { onLaunch(app) } label: {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color(red: 0.96, green: 0.53, blue: 0.64), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("启动 \(app.displayName)")
+            }
+            .padding(.horizontal, 2)
+        }
+        .padding(8)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.black.opacity(0.045), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.055), radius: 12, x: 0, y: 5)
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .opacity(feedAppeared ? 1 : 0)
+        .offset(y: feedAppeared ? 0 : 22)
+        .animation(Motion.card.delay(Double(index % 8) * 0.04), value: feedAppeared)
+        .onTapGesture {
+            withAnimation(Motion.hero) { detailTarget = app }
+        }
+        .contextMenu {
+            Button("启动", systemImage: "play") { onLaunch(app) }
+            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
+            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
+        }
+    }
+
+    @ViewBuilder
+    private func shoppingRow(app: LCAppModel, index: Int) -> some View {
+        let icon = app.appInfo.iconIsDarkIcon(false)
+            ?? LCGalleryCoverStore.shared.cover(for: app, wide: true)
+        HStack(spacing: 14) {
+            Image(uiImage: icon)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(app.displayName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(LCGalleryOnlineCoverStore.englishName(for: app.displayName) ?? app.displayName)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(LCGallerySizeStore.shared.sizeText(for: app))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            Button { onLaunch(app) } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(Color(red: 0.96, green: 0.53, blue: 0.64), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("启动 \(app.displayName)")
+        }
+        .padding(12)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.black.opacity(0.045), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.05), radius: 12, x: 0, y: 5)
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .opacity(feedAppeared ? 1 : 0)
+        .offset(y: feedAppeared ? 0 : 18)
+        .animation(Motion.card.delay(Double(index % 8) * 0.035), value: feedAppeared)
+        .onTapGesture {
+            withAnimation(Motion.hero) { detailTarget = app }
+        }
+        .contextMenu {
+            Button("启动", systemImage: "play") { onLaunch(app) }
+            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
+            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
+        }
     }
 
     // MARK: - v2 feed furniture (Silk motion system)
@@ -4250,10 +4671,10 @@ struct LCHomeGalleryView: View {
             zoneTab(title: "游戏", icon: "gamecontroller.fill", zone: 0)
             zoneTab(title: "软件", icon: "list.bullet", zone: 1)
         }
-        .padding(3)
-        .background(.ultraThinMaterial, in: Capsule())
+        .padding(4)
+        .background(Color(uiColor: .systemGray6), in: Capsule())
         .padding(.horizontal, sideMargin)
-        .padding(.top, 10)
+        .padding(.top, 20)
     }
 
     private func zoneTab(title: String, icon: String, zone: Int) -> some View {
@@ -4269,7 +4690,8 @@ struct LCHomeGalleryView: View {
             .frame(maxWidth: .infinity, minHeight: 34)
             .background {
                 if active {
-                    Capsule().fill(Color.white.opacity(0.85))
+                    Capsule().fill(Color.white)
+                        .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
                         .matchedGeometryEffect(id: "zonePill", in: heroSpace)
                 }
             }
@@ -4294,7 +4716,7 @@ struct LCHomeGalleryView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
                 .frame(height: 42)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                .background(Color(uiColor: .systemGray6), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             }
             .buttonStyle(.plain)
 
@@ -4331,14 +4753,14 @@ struct LCHomeGalleryView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(Color.primary)
                     .frame(width: 42, height: 42)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(Color.white.opacity(0.4), lineWidth: 1))
+                    .background(Color(uiColor: .systemGray6), in: Circle())
+                    .overlay(Circle().stroke(Color.black.opacity(0.06), lineWidth: 1))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("打开 SideStore")
         }
         .padding(.horizontal, sideMargin)
-        .padding(.top, 14)
+        .padding(.top, 18)
     }
 
     // Category capsules filter the current zone using existing metadata.
@@ -4352,7 +4774,7 @@ struct LCHomeGalleryView: View {
             }
             .padding(.horizontal, sideMargin)
         }
-        .padding(.top, 14)
+        .padding(.top, 18)
     }
 
     private func categoryChip(_ title: String, _ filter: Int) -> some View {
@@ -4363,14 +4785,14 @@ struct LCHomeGalleryView: View {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(active ? .white : Color.secondary)
-                .padding(.horizontal, 14)
-                .frame(height: 30)
+                .padding(.horizontal, 16)
+                .frame(height: 32)
                 .background {
                     if active {
                         Capsule().fill(Color(red: 1.0, green: 0.52, blue: 0.52))
                             .matchedGeometryEffect(id: "catPill", in: heroSpace)
                     } else {
-                        Capsule().fill(.ultraThinMaterial)
+                        Capsule().fill(Color(uiColor: .systemGray6))
                     }
                 }
         }
@@ -4412,7 +4834,7 @@ struct LCHomeGalleryView: View {
             }
         }
         .padding(.horizontal, sideMargin)
-        .padding(.top, 8)
+        .padding(.top, 14)
     }
 
     @ViewBuilder
@@ -4479,51 +4901,57 @@ struct LCHomeGalleryView: View {
     private func v2DetailPage(app: LCAppModel) -> some View {
         let bid = app.appInfo.bundleIdentifier() ?? app.displayName
         let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
-        let tint = LCGalleryColorStore.shared.color(for: app)
         let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
         let intro = LCGalleryMetaStore.shared.intro(for: app)
-        let heroH = pageWidth * 0.92
+        let heroH = pageWidth * 1.14
         return ZStack(alignment: .top) {
-            // Ambient wash from the cover colour so the sheet shares the
-            // card's palette — no flat slab when the artwork flies in.
-            tint.opacity(0.28).ignoresSafeArea()
-            Color.black.opacity(0.34).ignoresSafeArea()
+            // Opaque paper sheet: the detail screen must fully own its layer.
+            // The old tinted + black wash was translucent, so the home
+            // waterfall stayed visible underneath and the hierarchy collapsed.
+            Color.white.ignoresSafeArea()
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: 0) {
                     ZStack(alignment: .bottom) {
+                        // Reference detail: a soft pink stage with the artwork
+                        // inset as one large rounded card. Nothing translucent,
+                        // so the feed below can never show through.
+                        LinearGradient(colors: [
+                            Color(red: 1.0, green: 0.76, blue: 0.82),
+                            Color(red: 0.96, green: 0.53, blue: 0.65)
+                        ], startPoint: .top, endPoint: .bottom)
+                        .frame(width: pageWidth, height: heroH)
+
                         Image(uiImage: cover)
                             .resizable().scaledToFill()
-                            .frame(width: pageWidth, height: heroH)
+                            .frame(width: pageWidth - 40, height: heroH - 26)
                             .clipped()
+                            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                             // Destination of the shared cover from the card.
                             .matchedGeometryEffect(id: "cover-\(bid)", in: heroSpace,
                                                    isSource: detailTarget == app)
-                        LinearGradient(stops: [
-                            .init(color: .clear, location: 0.55),
-                            .init(color: .black.opacity(0.75), location: 1.0)
-                        ], startPoint: .top, endPoint: .bottom)
                     }
                     .frame(width: pageWidth, height: heroH)
+                    .clipped()
 
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .bottom) {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(app.displayName)
                                     .font(.system(size: 27, weight: .heavy))
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.primary)
                                 Text("v\(app.version) · \(meta.genre ?? (isSoftware(app) ? "软件" : "游戏"))")
                                     .font(.system(size: 12))
-                                    .foregroundStyle(.white.opacity(0.7))
+                                    .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Text(LCGallerySizeStore.shared.sizeText(for: app))
                                 .font(.system(size: 17, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.primary)
                         }
                         Text(intro)
                             .font(.system(size: 13))
-                            .foregroundStyle(.white.opacity(0.78))
-                            .lineSpacing(3)
+                            .foregroundStyle(.secondary)
+                            .lineSpacing(4)
                             .fixedSize(horizontal: false, vertical: true)
 
                         HStack(spacing: 10) {
@@ -4546,8 +4974,16 @@ struct LCHomeGalleryView: View {
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 52)
-                                .background(tint.opacity(0.9), in: Capsule())
+                                .frame(height: 54)
+                                .background(
+                                    LinearGradient(colors: [
+                                        Color(red: 0.99, green: 0.64, blue: 0.72),
+                                        Color(red: 0.94, green: 0.44, blue: 0.57)
+                                    ], startPoint: .topLeading, endPoint: .bottomTrailing),
+                                    in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+                                )
+                                .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.25),
+                                        radius: 12, y: 5)
                             }
                             .buttonStyle(.plain)
 
@@ -4556,9 +4992,9 @@ struct LCHomeGalleryView: View {
                             } label: {
                                 Image(systemName: "square.stack.3d.up")
                                     .font(.system(size: 19, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 52, height: 52)
-                                    .background(.ultraThinMaterial, in: Circle())
+                                    .foregroundStyle(.primary)
+                                    .frame(width: 54, height: 54)
+                                    .background(Color(uiColor: .systemGray6), in: Circle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("容器与存储管理")
@@ -4577,9 +5013,10 @@ struct LCHomeGalleryView: View {
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .frame(width: 40, height: 40)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(Color.white.opacity(0.94), in: Circle())
+                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
                 Spacer()
@@ -4594,9 +5031,14 @@ struct LCHomeGalleryView: View {
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
                         .background(
-                            Color(red: 1.0, green: 0.52, blue: 0.52).opacity(0.6),
+                            LinearGradient(colors: [
+                                Color(red: 0.99, green: 0.64, blue: 0.72),
+                                Color(red: 0.94, green: 0.44, blue: 0.57)
+                            ], startPoint: .topLeading, endPoint: .bottomTrailing),
                             in: Circle()
                         )
+                        .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.22),
+                                radius: 8, y: 3)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("安装应用")
@@ -4606,9 +5048,10 @@ struct LCHomeGalleryView: View {
                 } label: {
                     Image(systemName: "app.badge")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .frame(width: 40, height: 40)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(Color.white.opacity(0.94), in: Circle())
+                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("打开 SideStore")
@@ -4619,9 +5062,10 @@ struct LCHomeGalleryView: View {
                 } label: {
                     Image(systemName: "photo")
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .frame(width: 40, height: 40)
-                        .background(.ultraThinMaterial, in: Circle())
+                        .background(Color.white.opacity(0.94), in: Circle())
+                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
             }
@@ -4638,13 +5082,14 @@ struct LCHomeGalleryView: View {
                 Image(systemName: icon).font(.system(size: 12))
                 Text(value).font(.system(size: 13, weight: .bold))
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(.primary)
             .lineLimit(1)
-            Text(label).font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
+            Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .padding(12)
+        .background(Color(uiColor: .systemGray6),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     // MARK: - v2 container / storage manager
@@ -4653,19 +5098,19 @@ struct LCHomeGalleryView: View {
         let containers = app.appInfo.containers
         let total = LCGallerySizeStore.shared.sizeText(for: app)
         return ZStack {
-            Color(red: 0.055, green: 0.065, blue: 0.10).ignoresSafeArea()
+            Color.white.ignoresSafeArea()
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Text("容器与存储").font(.system(size: 24, weight: .heavy)).foregroundStyle(.white)
+                    Text("容器与存储").font(.system(size: 24, weight: .heavy)).foregroundStyle(.primary)
                     Spacer()
                     Button {
                         withAnimation(Motion.sheet) { containerTarget = nil }
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.primary)
                             .frame(width: 34, height: 34)
-                            .background(.ultraThinMaterial, in: Circle())
+                            .background(Color(uiColor: .systemGray6), in: Circle())
                     }
                     .buttonStyle(.plain)
                 }
@@ -4683,8 +5128,8 @@ struct LCHomeGalleryView: View {
                                     .frame(width: 42, height: 42)
                                     .overlay(Image(systemName: "folder").foregroundStyle(.white))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(c.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.white)
-                                    Text(selected ? "当前启动容器" : "点击切换").font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+                                    Text(c.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
+                                    Text(selected ? "当前启动容器" : "点击切换").font(.system(size: 10)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 if selected {
@@ -4694,13 +5139,18 @@ struct LCHomeGalleryView: View {
                                 }
                             }
                             .padding(12)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                            .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(Color.black.opacity(0.05), lineWidth: 1)
+                            )
+                            .shadow(color: .black.opacity(0.045), radius: 10, y: 4)
                             .contentShape(Rectangle())
                             .onTapGesture { app.uiSelectedContainer = c }
                         }
                         if containers.isEmpty {
                             Text("该应用暂无独立数据文件夹")
-                                .font(.system(size: 13)).foregroundStyle(.white.opacity(0.6))
+                                .font(.system(size: 13)).foregroundStyle(.secondary)
                                 .frame(maxWidth: .infinity).padding(.top, 40)
                         }
                     }
@@ -4709,16 +5159,24 @@ struct LCHomeGalleryView: View {
 
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("总占用").font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
-                        Text(total).font(.system(size: 21, weight: .heavy)).foregroundStyle(.white)
+                        Text("总占用").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(total).font(.system(size: 21, weight: .heavy)).foregroundStyle(.primary)
                     }
                     Spacer()
                     Button {
                         onLaunch(app)
                     } label: {
                         Text("启动").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 26).frame(height: 46)
-                            .background(Color(red: 1.0, green: 0.52, blue: 0.52), in: Capsule())
+                            .padding(.horizontal, 28).frame(height: 48)
+                            .background(
+                                LinearGradient(colors: [
+                                    Color(red: 0.99, green: 0.64, blue: 0.72),
+                                    Color(red: 0.94, green: 0.44, blue: 0.57)
+                                ], startPoint: .topLeading, endPoint: .bottomTrailing),
+                                in: Capsule()
+                            )
+                            .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.22),
+                                    radius: 10, y: 4)
                     }
                     .buttonStyle(.plain)
                 }
@@ -4732,10 +5190,10 @@ struct LCHomeGalleryView: View {
                     } label: {
                         Label("SideStore", systemImage: "app.badge")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(.primary)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 42)
-                            .background(.ultraThinMaterial, in: Capsule())
+                            .frame(height: 44)
+                            .background(Color(uiColor: .systemGray6), in: Capsule())
                     }
                     .buttonStyle(.plain)
                     Menu {
@@ -4746,9 +5204,12 @@ struct LCHomeGalleryView: View {
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)
-                            .frame(height: 42)
+                            .frame(height: 44)
                             .background(
-                                Color(red: 1.0, green: 0.52, blue: 0.52).opacity(0.6),
+                                LinearGradient(colors: [
+                                    Color(red: 0.99, green: 0.64, blue: 0.72),
+                                    Color(red: 0.94, green: 0.44, blue: 0.57)
+                                ], startPoint: .topLeading, endPoint: .bottomTrailing),
                                 in: Capsule()
                             )
                     }

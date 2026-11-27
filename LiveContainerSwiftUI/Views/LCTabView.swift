@@ -257,6 +257,11 @@ struct LCTabView: View {
     }
     
     func checkAndSaveBundleId() {
+#if targetEnvironment(simulator)
+        // Simulator builds have no application-identifier entitlement, so this
+        // device-only integrity check cannot resolve and only blocks preview.
+        return
+#endif
         if DataManager.shared.model.multiLCStatus == 2 {
             let scheme = UserDefaults.lcAppUrlScheme() ?? ""
             LCUtils.appGroupUserDefault.set(Bundle.main.bundleIdentifier, forKey: "LCBundleID.\(scheme)")
@@ -291,6 +296,11 @@ struct LCTabView: View {
     }
     
     func checkGetTaskAllow() {
+#if targetEnvironment(simulator)
+        // Simulator builds are unsigned ad-hoc; the warning is a device-only
+        // gate and would block local layout review behind a modal alert.
+        return
+#endif
         let task = SecTaskCreateFromSelf(nil)
         guard let value = SecTaskCopyValueForEntitlement(task, "get-task-allow" as CFString, nil), (value.takeRetainedValue() as? NSNumber)?.boolValue ?? false else {
             errorInfo = "lc.settings.notDevCert".loc
