@@ -106,6 +106,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // Portrait gallery dock: 0 = poster home, 1 = app list. Selection is owned
     // here so the dock can drive both surfaces; scrolling also writes it back.
     @State private var galleryDockSelection = 0
+    // Shared with the gallery so the bottom dock's list/grid buttons and the
+    // content view always reflect the same layout choice.
+    @State private var gameListLayout = 0
 
     // Gallery card context-menu uninstall target + confirmation.
     @State private var galleryUninstallApp: LCAppModel?
@@ -178,6 +181,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 hiddenApps: sortedHiddenApps,
                                 topBeadHidden: $topBeadHidden,
                                 dockSelection: $galleryDockSelection,
+                                gameListLayout: $gameListLayout,
                                 onLaunch: { app in
                                     Task { @MainActor in
                                         do { try await app.runApp() }
@@ -1338,32 +1342,52 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    // Portrait bottom dock — the compact three-slot control from the system
-    // reference: glyph over caption, with the centre tool held in its selected
-    // state. Actions still route through the original LC handlers.
+    // Portrait bottom dock, split into two groups like the reference: a left
+    // glass capsule holding SideStore / list / grid, and a separate round pink
+    // install bead pinned to the right edge. Actions use the original LC handlers.
     private var galleryDock: some View {
-        HStack(spacing: 0) {
-            // SideStore: open it when installed, otherwise show help.
-            Menu {
-                if UserDefaults.sideStoreExist() {
-                    Button {
-                        LCUtils.openSideStore(delegate: self)
-                    } label: {
-                        Label("SideStore", systemImage: "app.badge")
+        HStack(alignment: .center, spacing: 0) {
+            // Left capsule: store, list view and grid view.
+            HStack(spacing: 2) {
+                // SideStore: open it when installed, otherwise show help.
+                Menu {
+                    if UserDefaults.sideStoreExist() {
+                        Button {
+                            LCUtils.openSideStore(delegate: self)
+                        } label: {
+                            Label("SideStore", systemImage: "app.badge")
+                        }
+                    } else {
+                        Button("Help", systemImage: "questionmark") { helpPresent = true }
                     }
-                } else {
-                    Button("Help", systemImage: "questionmark") { helpPresent = true }
+                    Button("lc.appList.openLink".loc, systemImage: "link") {
+                        Task { await onOpenWebViewTapped() }
+                    }
+                } label: {
+                    dockGlyph(symbol: "app.badge", label: "SideStore")
                 }
-                Button("lc.appList.openLink".loc, systemImage: "link") {
-                    Task { await onOpenWebViewTapped() }
-                }
-            } label: {
-                dockItemContent(symbol: "app.badge", label: "SideStore", selected: false)
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            // Install keeps the soft pink glass bead from the earlier build.
-            // Tapping adds an app; the menu holds the extra actions.
+                // List view.
+                Button { gameListLayout = 0 } label: {
+                    dockGlyph(symbol: "list.bullet", label: "列表", selected: gameListLayout == 0)
+                }
+                .buttonStyle(.plain)
+
+                // Grid view.
+                Button { gameListLayout = 1 } label: {
+                    dockGlyph(symbol: "square.grid.2x2.fill", label: "卡片", selected: gameListLayout == 1)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 5)
+            .padding(.vertical, 5)
+            .glassEffect(.regular, in: Capsule())
+            .shadow(color: .black.opacity(0.24), radius: 14, y: 4)
+
+            Spacer(minLength: 12)
+
+            // Right: standalone round pink install bead.
             Menu {
                 installMenuItems
             } label: {
@@ -1372,37 +1396,26 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 choosingIPA = true
             }
             .buttonStyle(.plain)
-
-            // Sort: same picker as the native toolbar, minus the bar.
-            Menu {
-                Picker("Sort by", selection: $sharedAppSortManager.appSortType) {
-                    ForEach(AppSortType.allCases, id: \.self) { sortType in
-                        Label(sortType.displayName, systemImage: sortType.systemImage).tag(sortType)
-                    }
-                }
-                .onChange(of: sharedAppSortManager.appSortType) { newValue in
-                    if newValue == .custom { customSortViewPresent = true }
-                }
-                if sharedAppSortManager.appSortType == .custom {
-                    Divider()
-                    Button {
-                        customSortViewPresent = true
-                    } label: {
-                        Label("lc.appList.sort.customManage".loc, systemImage: "slider.horizontal.3")
-                    }
-                }
-            } label: {
-                dockItemContent(symbol: "line.3.horizontal.decrease.circle", label: "排序", selected: false)
-            }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
-        .frame(width: 206)
-        .glassEffect(.regular, in: Capsule())
-        .shadow(color: .black.opacity(0.28), radius: 18, y: 5)
+        .padding(.horizontal, 18)
         // Sit right on the home indicator like the iOS 27 floating bar.
-        .padding(.bottom, 2)
+        .padding(.bottom, 4)
+    }
+
+    // Icon-only glyph for the left dock capsule. The active list/grid glyph is
+    // highlighted so the current layout is obvious; SideStore stays neutral.
+    private func dockGlyph(symbol: String, label: String, selected: Bool = false) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 19, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.primary)
+            .frame(width: 46, height: 40)
+            .background {
+                if selected {
+                    Capsule().fill(.ultraThinMaterial)
+                }
+            }
+            .contentShape(Capsule())
+            .accessibilityLabel(label)
     }
 
     // The soft pink install bead carried over from the earlier build: a white
@@ -1432,28 +1445,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 Task { await startInstallFromUrl() }
             }
         }
-    }
-
-    private func dockItemContent(symbol: String, label: String, selected: Bool, round: Bool = false) -> some View {
-        // Primary ink flips with the system appearance; the selected glyph keeps
-        // the same blue in both so the active tool never disappears on glass.
-        let ink: Color = selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.primary.opacity(0.86)
-        return Image(systemName: symbol)
-            .font(.system(size: 21, weight: selected ? .semibold : .medium))
-            .foregroundStyle(ink)
-            .frame(width: round ? 44 : 52, height: 44)
-            .background {
-                if selected || round {
-                    if round {
-                        Circle().fill(.ultraThinMaterial)
-                    } else {
-                        Capsule().fill(.ultraThinMaterial)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .contentShape(Capsule())
-            .accessibilityLabel(label)
     }
 
     // Left-side page switcher (software placeholder only). Game is the default
@@ -3937,6 +3928,8 @@ struct LCHomeGalleryView: View {
     // Bottom dock selection: 0 = poster home, 1 = app list. Written by the
     // dock and fed back from scroll position so the highlight stays truthful.
     @Binding var dockSelection: Int
+    // List/grid layout, shared with the host so the bottom dock can switch it.
+    @Binding var gameListLayout: Int
     var onLaunch: (LCAppModel) -> Void
     var onOpenSettings: (LCAppModel) -> Void
     var onUninstall: (LCAppModel) -> Void
@@ -3958,9 +3951,6 @@ struct LCHomeGalleryView: View {
 
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     @State private var current = 0
-    // All-games section: 0 = dark row list (reference layout), 1 = two-column
-    // compact grid. Owned here so the toggle survives a scroll to the bottom.
-    @State private var gameListLayout = 0
     // Overscroll at the very top (positive when the page is pulled down). The
     // hero uses it to grow and fill the gap instead of exposing the backdrop.
     @State private var pullDown: CGFloat = 0
@@ -4149,7 +4139,8 @@ struct LCHomeGalleryView: View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
                 detailHeroHeader(coverHeight: stretchedCoverHeight)
-                allGamesSection
+                // No "全部游戏" bar: the list now starts right under the cover.
+                // The list/grid switch moved into the bottom-left dock.
                 if gameListLayout == 0 {
                     darkGameList
                 } else {
@@ -4252,14 +4243,16 @@ struct LCHomeGalleryView: View {
                         .blur(radius: 42)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
-                        .overlay(Color.black.opacity(0.5))
+                        .overlay(Color.black.opacity(0.38))
                         .id("backdrop-\(app.appInfo.bundleIdentifier() ?? "\(current)")-\(coverTick)")
                         .transition(.opacity)
                 }
+                // Gentle shade that keeps list text readable but still lets the
+                // blurred poster carry its colour all the way to the bottom.
                 LinearGradient(colors: [
-                    Color.black.opacity(0.10),
-                    Color.black.opacity(0.28),
-                    Color.black.opacity(0.55)
+                    Color.black.opacity(0.06),
+                    Color.black.opacity(0.18),
+                    Color.black.opacity(0.34)
                 ], startPoint: .top, endPoint: .bottom)
             }
             // The frosted backdrop changes with the poster, and the page is
@@ -4392,10 +4385,10 @@ struct LCHomeGalleryView: View {
     }
 
     private func detailHeroHeader(coverHeight: CGFloat) -> some View {
-        let page = Color(red: 0.02, green: 0.05, blue: 0.11)
-        // The artwork keeps going all the way behind the launch button. The
-        // detail block floats on its own lower gradient instead of a flat
-        // colour slab, which was the visible seam in the previous build.
+        // The artwork keeps going all the way behind the launch button. Its
+        // lower edge dissolves through a soft black wash into the blurred
+        // poster backdrop, so the whole screen reads as one continuous image
+        // instead of stopping at a flat colour slab.
         let artHeight = coverHeight + detailInfoHeight
         return ZStack(alignment: .bottom) {
             if current < apps.count {
@@ -4421,17 +4414,16 @@ struct LCHomeGalleryView: View {
                 .init(color: .black.opacity(0.08), location: 0.12),
                 .init(color: .clear, location: 0.24)
             ], startPoint: .top, endPoint: .bottom)
-            // Long, many-stop dissolve. It stays clear over the artwork, then
-            // deepens steadily through the title and buttons and lands exactly
-            // on the page colour at the bottom — no line, no separate band.
+            // Long, many-stop dissolve into the blurred backdrop. The last
+            // stop fades back to clear, so the artwork melts into the full-screen
+            // poster wash below instead of ending on a hard dark band.
             LinearGradient(stops: [
                 .init(color: .clear, location: 0.0),
-                .init(color: .clear, location: 0.30),
-                .init(color: page.opacity(0.20), location: 0.44),
-                .init(color: page.opacity(0.54), location: 0.60),
-                .init(color: page.opacity(0.84), location: 0.76),
-                .init(color: page.opacity(0.96), location: 0.90),
-                .init(color: page, location: 1.0)
+                .init(color: .clear, location: 0.26),
+                .init(color: Color.black.opacity(0.30), location: 0.48),
+                .init(color: Color.black.opacity(0.52), location: 0.68),
+                .init(color: Color.black.opacity(0.42), location: 0.86),
+                .init(color: .clear, location: 1.0)
             ], startPoint: .top, endPoint: .bottom)
 
             detailInfoBlock
@@ -4508,66 +4500,6 @@ struct LCHomeGalleryView: View {
 
     // MARK: All games section + dark cards
 
-    // Fixed height of the "全部游戏" bar. It is opaque so list rows slide
-    // underneath it while the title and layout switch stay put.
-    private var sectionBarHeight: CGFloat { 56 }
-
-    private var allGamesSection: some View {
-        let tint: Color = current < apps.count
-            ? LCGalleryColorStore.shared.color(for: apps[current])
-            : Color(red: 0.12, green: 0.18, blue: 0.30)
-        let page = Color(red: 0.02, green: 0.05, blue: 0.11)
-        return HStack(spacing: 8) {
-            Text("全部游戏")
-                .font(.system(size: 21, weight: .bold))
-                .foregroundStyle(.white)
-            Text("\(visibleApps.count)")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.6))
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Color.white.opacity(0.10), in: Capsule())
-            // Total on-disk footprint of all guest apps, refreshed whenever the
-            // size store finishes a calculation.
-            Text(LCGallerySizeStore.shared.totalText(for: visibleApps))
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.white.opacity(0.44))
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            HStack(spacing: 4) {
-                Button { gameListLayout = 0 } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(gameListLayout == 0 ? .white : .white.opacity(0.52))
-                        .frame(width: 46, height: 40)
-                        .background(gameListLayout == 0 ? Color.white.opacity(0.20) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                }
-                Button { gameListLayout = 1 } label: {
-                    Image(systemName: "square.grid.2x2.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(gameListLayout == 1 ? .white : .white.opacity(0.52))
-                        .frame(width: 46, height: 40)
-                        .background(gameListLayout == 1 ? Color.white.opacity(0.20) : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(4)
-            .background(Color.white.opacity(0.10), in: Capsule())
-        }
-        .padding(.horizontal, sideMargin)
-        .padding(.bottom, 6)
-        .frame(height: sectionBarHeight)
-        // Opaque wash matching the cover's dissolve, so rows passing beneath
-        // the fixed bar are hidden instead of showing through the title.
-        .background(
-            ZStack {
-                page
-                tint.opacity(0.12)
-            }
-        )
-    }
-
     private var darkGameList: some View {
         VStack(spacing: 10) {
             ForEach(Array(visibleApps.enumerated()), id: \.offset) { index, app in
@@ -4587,57 +4519,52 @@ struct LCHomeGalleryView: View {
         .padding(.horizontal, sideMargin)
     }
 
-    // Grid card: full-bleed artwork with the name printed at the bottom-left
-    // over a soft upward wash. No tile icon or play glyph; a deep shadow lifts
-    // the card off the page so the grid reads as a stack of floating covers.
+    // 16:9 grid card: full-bleed artwork with the name printed at the bottom
+    // over a soft upward wash. Two columns, no tile icon and no run button —
+    // the whole card is the launch target. A deep shadow lifts it off the page.
     @ViewBuilder
     private func coverNameCard(app: LCAppModel, active: Bool) -> some View {
         let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        // Reference card: a rounded artwork inset in a light surface, with the
-        // name and footprint on the left and a blue action capsule on the right.
-        // System semantic colours keep it correct in both light and dark mode.
-        VStack(spacing: 9) {
-            // Crop the artwork to the exact width of this grid cell. A bare
-            // scaledToFill + frame(height:) derives the image width from its
-            // own aspect ratio, which lets a wide cover push the flexible
-            // column out of alignment — the misalignment visible on the
-            // second row of the reference screenshot. Reading the real cell
-            // width keeps every card the same size.
-            GeometryReader { geo in
+        GeometryReader { geo in
+            let w = geo.size.width
+            let artH = w * 9 / 16
+            ZStack(alignment: .bottomLeading) {
                 Image(uiImage: cover)
                     .resizable().scaledToFill()
-                    .frame(width: geo.size.width, height: 132)
+                    .frame(width: w, height: artH)
                     .clipped()
+                // Bottom wash so the title stays readable on any artwork.
+                LinearGradient(stops: [
+                    .init(color: .clear, location: 0.42),
+                    .init(color: .black.opacity(0.42), location: 0.74),
+                    .init(color: .black.opacity(0.86), location: 1.0)
+                ], startPoint: .top, endPoint: .bottom)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(app.displayName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Text(LCGallerySizeStore.shared.sizeText(for: app))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 11)
+                .padding(.bottom, 9)
             }
-            .frame(height: 132)
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-
-            // Name + footprint only. The whole card owns the launch tap, so
-            // grid cards no longer show a separate run button.
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.displayName)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Text(LCGallerySizeStore.shared.sizeText(for: app))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 11)
-            .padding(.bottom, 11)
+            .frame(width: w, height: artH)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.blue.opacity(active ? 0.65 : 0), lineWidth: active ? 1.6 : 0)
+            )
         }
-        .padding(8)
-        .background(Color(uiColor: .secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.blue.opacity(active ? 0.60 : 0), lineWidth: active ? 1.5 : 0)
-        )
-        .shadow(color: .black.opacity(0.24), radius: 14, x: 0, y: 6)
-        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        // GeometryReader needs an explicit height: the 16:9 art height for the
+        // two-column width is ~100pt on current phones.
+        .frame(height: (UIScreen.main.bounds.width - 2 * sideMargin - 14) / 2 * 9 / 16)
+        .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onTapGesture { onLaunch(app) }
         .contextMenu {
             Button("启动", systemImage: "play") { onLaunch(app) }
@@ -4662,7 +4589,7 @@ struct LCHomeGalleryView: View {
                 HStack(spacing: 5) {
                     Text(zh)
                         .font(.system(size: compact ? 14 : 16, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                     if active {
                         Circle().fill(Color(red: 1.0, green: 0.32, blue: 0.36)).frame(width: 5, height: 5)
@@ -4671,31 +4598,31 @@ struct LCHomeGalleryView: View {
                 HStack(spacing: 6) {
                     Text(en)
                         .font(.system(size: compact ? 10 : 12))
-                        .foregroundStyle(.white.opacity(0.52))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                     // Footprint sits on its own small plate; the genre tag is
                     // intentionally left out of list rows.
                     Text(LCGallerySizeStore.shared.sizeText(for: app))
                         .font(.system(size: compact ? 9 : 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.66))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.white.opacity(0.10), in: Capsule())
+                        .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
                         .layoutPriority(1)
                 }
             }
             Spacer(minLength: 0)
             Image(systemName: "play.circle.fill")
                 .font(.system(size: compact ? 22 : 25))
-                .foregroundStyle(.white.opacity(0.42))
+                .foregroundStyle(.secondary.opacity(0.7))
         }
         .padding(.horizontal, compact ? 10 : 13)
         .padding(.vertical, compact ? 9 : 11)
-        .background(Color.white.opacity(active ? 0.10 : 0.065),
+        .background(Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.white.opacity(0.07), lineWidth: 0.6)
+                .stroke(Color.blue.opacity(active ? 0.55 : 0), lineWidth: active ? 1.4 : 0)
         )
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onTapGesture { onLaunch(app) }
