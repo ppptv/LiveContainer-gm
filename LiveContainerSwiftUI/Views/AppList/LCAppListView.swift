@@ -3937,6 +3937,10 @@ struct LCHomeGalleryView: View {
     // Overscroll at the very top (positive when the page is pulled down). The
     // hero uses it to grow and fill the gap instead of exposing the backdrop.
     @State private var pullDown: CGFloat = 0
+    // Live vertical scroll offset of the collapsing home surface. The poster
+    // height is bound directly to this value, so it tracks the finger instead
+    // of animating behind it — that is what makes the shrink feel continuous.
+    @State private var heroScrollY: CGFloat = 0
     @State private var coverTick = 0
     @State private var sizeTick = 0
     @State private var metaTick = 0
@@ -4072,22 +4076,11 @@ struct LCHomeGalleryView: View {
     // one that was laid out for the other orientation. Mutating it left the
     // grid with stale geometry after rotating back — the list showed up empty.
     private var portraitPage: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                if dockSelection == 0 {
-                    // Home surface: one clean, full-bleed poster with the white
-                    // paging card. No icon rail, no title, no run pill.
-                    hero
-                } else {
-                    // List surface: the existing all-apps grid.
-                    VStack(alignment: .leading, spacing: 0) {
-                        cardsSection
-                        hiddenSection
-                        Spacer(minLength: 110)
-                    }
-                    .padding(.horizontal, sideMargin)
-                    .padding(.top, 56)
-                }
+        ZStack(alignment: .top) {
+            if dockSelection == 0 {
+                homeCollapsingSurface
+            } else {
+                listSurface
             }
         }
         // Rebuild when the dock surface changes so a list scrolled to the
@@ -4102,29 +4095,88 @@ struct LCHomeGalleryView: View {
         // object in both settings; landscape deliberately does not inherit
         // this, so it can follow the system (see galleryBackdrop).
         .environment(\.colorScheme, .dark)
-        // The old PreferenceKey reader never fired, which is why neither the
-        // pull-down fill nor the collapsing dock ever moved. ScrollGeometry
-        // is the supported way to observe this.
+        // Switching surfaces rebuilds the scroll view but not this state, so
+        // the poster would otherwise come back stuck at its collapsed height.
+        .onChange(of: dockSelection) { mode in
+            if mode == 0 { heroScrollY = 0 }
+        }
+    }
+
+    // The classic app grid, kept intact for the dock's 列表 tab.
+    private var listSurface: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                cardsSection
+                hiddenSection
+                Spacer(minLength: 110)
+            }
+            .padding(.horizontal, sideMargin)
+            .padding(.top, 56)
+        }
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, y in
-            let pull = max(0, -y)
-            if abs(pull - pullDown) > 0.5 {
-                pullDown = min(pull, 340)
+            trackScroll(y)
+        }
+    }
+
+    // Home: a full-bleed poster that collapses to a pinned 16:9 header while a
+    // vertical column of white game cards slides in underneath it. The poster
+    // is a fixed overlay (not inside the scroll content), so its height can be
+    // driven straight off the scroll offset and track the finger 1:1 — an
+    // in-tree header would lag a frame behind and read as a stutter.
+    private var homeCollapsingSurface: some View {
+        ZStack(alignment: .top) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Empty space the size of the open poster: the first card
+                    // starts just below the screen, then follows the shrinking
+                    // poster up until it scrolls behind the pinned 16:9 header.
+                    Color.clear.frame(height: heroHeight)
+                    whiteCardList
+                    Spacer(minLength: 130)
+                }
             }
-            // Plus bead follows the reading direction: it tucks away once the
-            // list is pulled upwards (content moving up, offset growing) and
-            // returns as soon as the finger reverses. 6pt of hysteresis keeps
-            // jitter from flickering it.
-            let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
-            lastScrollY = y
-            if y <= 6 {
-                if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
-            } else if delta > 6 {
-                if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
-            } else if delta < -6 {
-                if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, y in
+                heroScrollY = y
+                trackScroll(y)
             }
+            // Swiping the poster itself turns pages. Attached to the scroll
+            // view so a vertical drag still scrolls the list; only a clearly
+            // horizontal move is treated as a page turn.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24)
+                    .onEnded { v in
+                        guard abs(v.translation.width) > abs(v.translation.height) else { return }
+                        if v.translation.width < -36 { goSlide(current + 1) }
+                        else if v.translation.width > 36 { goSlide(current - 1) }
+                    }
+            )
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
+            )
+
+            collapsingPoster
+                // Touches belong to the scroll view underneath; the poster is
+                // only artwork, so it must never swallow a scroll or a tap.
+                .allowsHitTesting(false)
+        }
+    }
+
+    // Shared scroll bookkeeping: elastic pull, plus-bead direction.
+    private func trackScroll(_ y: CGFloat) {
+        let pull = max(0, -y)
+        if abs(pull - pullDown) > 0.5 { pullDown = min(pull, 340) }
+        let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
+        lastScrollY = y
+        if y <= 6 {
+            if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
+        } else if delta > 6 {
+            if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
+        } else if delta < -6 {
+            if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
         }
     }
 
@@ -4291,7 +4343,7 @@ struct LCHomeGalleryView: View {
 
     // MARK: Hero carousel — full-bleed official poster, iOS 27 style
 
-    private var hero: some View { portraitHero }
+    private var hero: some View { collapsingPoster }
 
     // Portrait width. There are no horizontal safe-area insets in portrait, so
     // the screen width is exactly the page width — and unlike a cached
@@ -4300,104 +4352,112 @@ struct LCHomeGalleryView: View {
     private var pageWidth: CGFloat { UIScreen.main.bounds.width }
 
     private var heroHeight: CGFloat {
-        // Full-bleed poster: the cover now owns the whole screen and the app
-        // list is a separate dock surface, so the hero fills the viewport.
+        // Full-bleed poster: the cover owns the whole screen at rest and only
+        // collapses to a 16:9 strip once the user starts scrolling up.
         UIScreen.main.bounds.height
     }
 
-    private var portraitHero: some View {
-        let width = pageWidth
-        let height = heroHeight
-        return ZStack(alignment: .bottom) {
-            heroBackground(width: width, height: height)
-            // The only thing drawn on top of the artwork is the white paging
-            // card. Game title, run pill and icon rail are all gone — the
-            // reference asks for one clean poster.
-            whiteCardPager
-                .padding(.bottom, 94)
-        }
-        .frame(width: width, height: height, alignment: .bottom)
-        .contentShape(Rectangle())
-        // Switching is driven by the white card now; swiping the poster itself
-        // would fight the card's pager for the same gesture.
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
-        )
+    // Height of the pinned header once the poster is fully collapsed: a
+    // full-width 16:9 frame, i.e. the native aspect of the game's key art.
+    private var collapsedHeroHeight: CGFloat { pageWidth * 9 / 16 }
+
+    // 0 at rest, 1 once the poster has reached its 16:9 stopped position.
+    private var heroCollapse: CGFloat {
+        let travel = max(1, heroHeight - collapsedHeroHeight)
+        return min(1, max(0, heroScrollY / travel))
     }
 
-    // MARK: White paging card
+    // Bound directly to the scroll offset so shrinking follows the finger.
+    private var collapsingHeroHeight: CGFloat {
+        heroHeight - heroCollapse * (heroHeight - collapsedHeroHeight)
+    }
 
-    // Live finger offset of the white card row, kept separate from landscape's
-    // dragX so a rotation can never carry a half-swiped card into the poster.
-    @State private var cardDragX: CGFloat = 0
+    // Poster layer of the collapsing home. Width is always the full screen;
+    // only the height animates with the scroll offset, from full height down
+    // to the 16:9 stop. Artwork is cross-faded on a game change so the poster
+    // follows the card without a hard cut.
+    private var collapsingPoster: some View {
+        let width = pageWidth
+        let height = collapsingHeroHeight
+        return ZStack {
+            if current < apps.count {
+                let app = apps[current]
+                let key = app.appInfo.bundleIdentifier() ?? "\(current)"
+                // At rest the tall box art is the right crop; once collapsed
+                // into the 16:9 bar the wide key art fills the frame properly.
+                let image = heroCollapse > 0.55
+                    ? (LCGalleryCoverStore.shared.cover(for: app, wide: true)
+                       ?? LCGalleryCoverStore.shared.cover(for: app))
+                    : LCGalleryCoverStore.shared.cover(for: app)
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipped()
+                    .id("collapse-\(key)-\(coverTick)")
+                    .transition(.opacity)
+            } else {
+                LinearGradient(colors: [
+                    Color(red: 0.09, green: 0.36, blue: 0.72),
+                    Color(red: 0.02, green: 0.08, blue: 0.18)
+                ], startPoint: .top, endPoint: .bottom)
+            }
+        }
+        .frame(width: width, height: height, alignment: .top)
+        .clipped()
+        // Game changes cross-fade; the scroll-driven height change is left
+        // unanimated so it stays locked to the finger.
+        .animation(.easeInOut(duration: 0.42), value: current)
+    }
+
+    // MARK: White game cards (vertical column under the poster)
 
     private var whiteCardWidth: CGFloat { pageWidth - 2 * sideMargin - 20 }
+    private var whiteCardHeight: CGFloat { 112 }
 
-    private var whiteCardPager: some View {
-        let w = whiteCardWidth
-        let step = w + 14
-        return GeometryReader { _ in
-            HStack(spacing: 14) {
-                ForEach(Array(apps.enumerated()), id: \.offset) { index, app in
-                    whiteInfoCard(app: app)
-                        .frame(width: w, height: 84)
-                }
+    // One card per installed game, stacked downward and scrolled under the
+    // pinned poster. The selected game's card is tinted so the column and the
+    // poster always read as the same selection.
+    private var whiteCardList: some View {
+        VStack(spacing: 12) {
+            ForEach(Array(apps.enumerated()), id: \.offset) { index, app in
+                whiteInfoCard(app: app, active: index == current)
+                    .frame(width: whiteCardWidth, height: whiteCardHeight)
             }
-            .padding(.horizontal, sideMargin + 10)
-            .offset(x: -CGFloat(current) * step + cardDragX)
-            .animation(.interactiveSpring(response: 0.42, dampingFraction: 0.9), value: current)
-            .gesture(
-                DragGesture(minimumDistance: 10)
-                    .onChanged { value in
-                        withTransaction(Transaction(animation: nil)) {
-                            cardDragX = value.translation.width
-                        }
-                    }
-                    .onEnded { value in
-                        let dx = value.translation.width
-                        var next = current
-                        if dx < -30 { next = min(current + 1, apps.count - 1) }
-                        else if dx > 30 { next = max(current - 1, 0) }
-                        withTransaction(Transaction(animation: nil)) { cardDragX = 0 }
-                        withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.9)) {
-                            current = next
-                        }
-                    }
-            )
         }
-        .frame(height: 84)
-        .clipped()
+        .padding(.horizontal, sideMargin + 10)
     }
 
     @ViewBuilder
-    private func whiteInfoCard(app: LCAppModel) -> some View {
+    private func whiteInfoCard(app: LCAppModel, active: Bool) -> some View {
         let zh = app.displayName
         let en = LCGalleryOnlineCoverStore.englishName(for: zh) ?? zh
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             if let icon = app.appInfo.iconIsDarkIcon(false) {
                 Image(uiImage: icon)
                     .resizable().scaledToFill()
-                    .frame(width: 54, height: 54)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .frame(width: 76, height: 76)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(en)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.black)
                     .lineLimit(1)
                 if en != zh {
                     Text(zh)
-                        .font(.system(size: 13))
+                        .font(.system(size: 14))
                         .foregroundStyle(.black.opacity(0.58))
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 15)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.horizontal, 18)
+        .background(active ? Color.white : Color.white.opacity(0.94),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
-        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onTapGesture {
             withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.9)) {
                 onLaunch(app)
