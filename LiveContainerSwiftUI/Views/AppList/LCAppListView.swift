@@ -4572,12 +4572,20 @@ struct LCHomeGalleryView: View {
         // name and footprint on the left and a blue action capsule on the right.
         // System semantic colours keep it correct in both light and dark mode.
         VStack(spacing: 9) {
-            Image(uiImage: cover)
-                .resizable().scaledToFill()
-                .frame(height: 132)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            // Crop the artwork to the exact width of this grid cell. A bare
+            // scaledToFill + frame(height:) derives the image width from its
+            // own aspect ratio, which lets a wide cover push the flexible
+            // column out of alignment — the misalignment visible on the
+            // second row of the reference screenshot. Reading the real cell
+            // width keeps every card the same size.
+            GeometryReader { geo in
+                Image(uiImage: cover)
+                    .resizable().scaledToFill()
+                    .frame(width: geo.size.width, height: 132)
+                    .clipped()
+            }
+            .frame(height: 132)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
 
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 2) {
