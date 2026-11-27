@@ -1367,7 +1367,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             Menu {
                 installMenuItems
             } label: {
-                dockItemContent(symbol: "plus", label: "安装", selected: true)
+                dockItemContent(symbol: "plus", label: "安装", selected: true, round: true)
             } primaryAction: {
                 choosingIPA = true
             }
@@ -1398,9 +1398,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 6)
-        .frame(width: 234)
+        .frame(width: 210)
         .glassEffect(.regular, in: Capsule())
-        .environment(\.colorScheme, .light)
         .padding(.bottom, 22)
     }
 
@@ -1416,24 +1415,26 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    private func dockItemContent(symbol: String, label: String, selected: Bool) -> some View {
-        let ink: Color = selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.black.opacity(0.86)
-        return VStack(spacing: 3) {
-            Image(systemName: symbol)
-                .font(.system(size: 18, weight: selected ? .semibold : .medium))
-                .foregroundStyle(ink)
-                .frame(width: 56, height: 34)
-                .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(Color.black.opacity(selected ? 0.09 : 0))
-                )
-            Text(label)
-                .font(.system(size: 10, weight: selected ? .semibold : .medium))
-                .foregroundStyle(ink)
-        }
-        .frame(maxWidth: .infinity)
-        .contentShape(Capsule())
-        .accessibilityLabel(label)
+    private func dockItemContent(symbol: String, label: String, selected: Bool, round: Bool = false) -> some View {
+        // Primary ink flips with the system appearance; the selected glyph keeps
+        // the same blue in both so the active tool never disappears on glass.
+        let ink: Color = selected ? Color(red: 0.05, green: 0.48, blue: 0.98) : Color.primary.opacity(0.86)
+        return Image(systemName: symbol)
+            .font(.system(size: 19, weight: selected ? .semibold : .medium))
+            .foregroundStyle(ink)
+            .frame(width: round ? 44 : 52, height: 44)
+            .background {
+                if selected || round {
+                    if round {
+                        Circle().fill(.ultraThinMaterial)
+                    } else {
+                        Capsule().fill(.ultraThinMaterial)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Capsule())
+            .accessibilityLabel(label)
     }
 
     // Left-side page switcher (software placeholder only). Game is the default
@@ -4094,14 +4095,9 @@ struct LCHomeGalleryView: View {
         // bottom cannot leave the home poster parked halfway off-screen.
         .id("portrait-\(dockSelection)")
         .ignoresSafeArea(edges: .top)
-        // Portrait stays night-side no matter what the system is set to. The
-        // page is built on artwork, not on system surfaces: everything from the
-        // caps to the frosted run pill is tuned against a dark card, and in
-        // light mode those materials flipped to white slabs sitting on a dark
-        // poster. Pinning the scheme here keeps every card the same fixed dark
-        // object in both settings; landscape deliberately does not inherit
-        // this, so it can follow the system (see galleryBackdrop).
-        .environment(\.colorScheme, .dark)
+        // The gallery follows the system appearance now. The artwork and the
+        // cards keep their own dark surfaces, while every glass control picks
+        // up the user's light/dark setting instead of being pinned to one.
         // Switching surfaces rebuilds the scroll view but not this state, so
         // the poster would otherwise come back stuck at its collapsed height.
         .onChange(of: dockSelection) { mode in
@@ -4127,28 +4123,33 @@ struct LCHomeGalleryView: View {
         }
     }
 
-    // Home: cover header → game detail → "全部游戏" list, all in one scroll
-    // surface. The artwork is a fixed-height header (about a third of the
-    // screen) that dissolves into the page colour, with the detail block laid
-    // over its lower edge — the exact hierarchy of the reference design.
+    // Home: a fixed 16:9 cover and title band above, with the game list
+    // scrolling in beneath them. Pulling past the top stretches the cover with
+    // a damped, finger-tracked spring; scrolling up never moves the header.
     private var homeDetailSurface: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                detailHeroHeader
-                allGamesSection
-                if gameListLayout == 0 {
-                    darkGameList
-                } else {
-                    darkGameGrid
+        ZStack(alignment: .top) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Reserve the header's footprint: the first row starts just
+                    // under the title, and later rows slide behind the band.
+                    Color.clear.frame(height: headerHeight)
+                    allGamesSection
+                    if gameListLayout == 0 {
+                        darkGameList
+                    } else {
+                        darkGameGrid
+                    }
+                    Spacer(minLength: 110)
                 }
-                Spacer(minLength: 110)
             }
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y + geo.contentInsets.top
-        } action: { _, y in
-            heroScrollY = y
-            trackScroll(y)
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, y in
+                heroScrollY = y
+                trackScroll(y)
+            }
+
+            fixedDetailHeader
         }
         // Horizontal drags on the artwork/page switch games; vertical drags
         // still scroll the list, so only a clearly horizontal move counts.
@@ -4163,6 +4164,38 @@ struct LCHomeGalleryView: View {
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
         )
+    }
+
+    // Native 16:9 artwork. Overscroll adds a capped, damped amount so the pull
+    // feels elastic without ever distorting the cover during normal scrolling.
+    private var coverArtHeight: CGFloat { pageWidth * 9 / 16 }
+    private var headerHeight: CGFloat { coverArtHeight + detailInfoHeight }
+    private var stretchedCoverHeight: CGFloat { coverArtHeight + min(pullDown * 0.26, 62) }
+
+    private var fixedDetailHeader: some View {
+        let page = Color(red: 0.02, green: 0.05, blue: 0.11)
+        let tint: Color = current < apps.count
+            ? LCGalleryColorStore.shared.color(for: apps[current])
+            : Color(red: 0.12, green: 0.18, blue: 0.30)
+        return VStack(spacing: 0) {
+            detailHeroHeader(coverHeight: stretchedCoverHeight)
+            // Opaque title band: rows passing beneath disappear here, which is
+            // what makes the list read as sliding *under* the fixed title.
+            ZStack(alignment: .bottom) {
+                page
+                tint.opacity(0.20)
+                LinearGradient(stops: [
+                    .init(color: tint.opacity(0.28), location: 0),
+                    .init(color: page.opacity(0.24), location: 0.5),
+                    .init(color: page, location: 1)
+                ], startPoint: .top, endPoint: .bottom)
+                detailInfoBlock
+            }
+            .frame(width: pageWidth, height: detailInfoHeight)
+            .clipped()
+        }
+        .frame(width: pageWidth, height: stretchedCoverHeight + detailInfoHeight)
+        .clipped()
     }
 
     // Shared scroll bookkeeping: elastic pull, plus-bead direction.
@@ -4343,8 +4376,6 @@ struct LCHomeGalleryView: View {
 
     // MARK: Hero carousel — full-bleed official poster, iOS 27 style
 
-    private var hero: some View { detailHeroHeader }
-
     // Portrait width. There are no horizontal safe-area insets in portrait, so
     // the screen width is exactly the page width — and unlike a cached
     // measurement it can never be one rotation behind. Landscape takes its own
@@ -4357,11 +4388,9 @@ struct LCHomeGalleryView: View {
 
     // MARK: Cover header (fixed, about a third of the screen)
 
-    private var detailArtHeight: CGFloat { min(UIScreen.main.bounds.height * 0.31, 420) }
-    // The detail text and launch controls sit on the lower part of the artwork,
-    // over the same dissolve that used to stop at the image edge. That is what
-    // makes the name feel printed on the cover instead of parked underneath it.
-    private var detailInfoHeight: CGFloat { 132 }
+    // Fixed height of the title band under the artwork. It is opaque so list
+    // rows can pass underneath without ever pushing the title away.
+    private var detailInfoHeight: CGFloat { 144 }
 
     private static func shortPlatform(_ raw: String?) -> String {
         guard let raw else { return "NSW" }
@@ -4371,77 +4400,41 @@ struct LCHomeGalleryView: View {
         return raw.count <= 5 ? raw : "NSW"
     }
 
-    private var detailHeroHeader: some View {
-        let h = detailArtHeight
-        let infoH = detailInfoHeight
+    private func detailHeroHeader(coverHeight: CGFloat) -> some View {
         let page = Color(red: 0.02, green: 0.05, blue: 0.11)
-        // The status-bar band and the artwork now share one continuous wash.
-        // Keeping them as two flat slabs was what produced the visible seam
-        // under the island; the band fades into the top of the cover instead.
-        let gap: CGFloat = 54
-        let tint: Color = current < apps.count
-            ? LCGalleryColorStore.shared.color(for: apps[current])
-            : Color(red: 0.12, green: 0.18, blue: 0.30)
-        return VStack(spacing: 0) {
-            ZStack {
-                page
-                tint.opacity(0.58)
-                Rectangle().fill(.ultraThinMaterial)
-                // Dark at the very top for legible status glyphs, softening to
-                // nothing at the bottom edge where the cover takes over.
-                LinearGradient(stops: [
-                    .init(color: .black.opacity(0.30), location: 0.0),
-                    .init(color: .black.opacity(0.06), location: 0.58),
-                    .init(color: .clear, location: 1.0)
+        return ZStack(alignment: .bottom) {
+            if current < apps.count {
+                let app = apps[current]
+                let key = app.appInfo.bundleIdentifier() ?? "\(current)"
+                Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: true))
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: pageWidth, height: coverHeight)
+                    .clipped()
+                    .id("detail-\(key)-\(coverTick)")
+                    .transition(.opacity)
+            } else {
+                LinearGradient(colors: [
+                    Color(red: 0.09, green: 0.36, blue: 0.72),
+                    Color(red: 0.02, green: 0.08, blue: 0.18)
                 ], startPoint: .top, endPoint: .bottom)
             }
-            .frame(width: pageWidth, height: gap)
-
-            // Cover runs on behind the detail block so the title and buttons
-            // are laid over the artwork's own gradient, not a separate card.
-            ZStack(alignment: .bottom) {
-                if current < apps.count {
-                    let app = apps[current]
-                    let key = app.appInfo.bundleIdentifier() ?? "\(current)"
-                    Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: true)
-                          ?? LCGalleryCoverStore.shared.cover(for: app))
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: pageWidth, height: h + infoH)
-                        .clipped()
-                        .id("detail-\(key)-\(coverTick)")
-                        .transition(.opacity)
-                } else {
-                    LinearGradient(colors: [
-                        Color(red: 0.09, green: 0.36, blue: 0.72),
-                        Color(red: 0.02, green: 0.08, blue: 0.18)
-                    ], startPoint: .top, endPoint: .bottom)
-                }
-                // Top of the cover picks up the band's colour, then clears so
-                // the artwork is untouched through its middle.
-                LinearGradient(stops: [
-                    .init(color: page.opacity(0.58), location: 0.0),
-                    .init(color: .clear, location: 0.16)
-                ], startPoint: .top, endPoint: .bottom)
-                // Long dissolve under the text. It begins before the title and
-                // reaches the page colour at the very bottom: no cut line, and
-                // every label sits on a dark, consistent wash.
-                LinearGradient(stops: [
-                    .init(color: .clear, location: 0.0),
-                    .init(color: .clear, location: 0.34),
-                    .init(color: page.opacity(0.34), location: 0.54),
-                    .init(color: page.opacity(0.72), location: 0.70),
-                    .init(color: page.opacity(0.94), location: 0.86),
-                    .init(color: page, location: 1.0)
-                ], startPoint: .top, endPoint: .bottom)
-
-                detailInfoBlock
-            }
-            .frame(width: pageWidth, height: h + infoH)
-            .clipped()
+            // Status glyphs stay legible on bright artwork without a frosted
+            // band: a short, soft shade only, gone by the upper third.
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.34), location: 0.0),
+                .init(color: .black.opacity(0.08), location: 0.22),
+                .init(color: .clear, location: 0.38)
+            ], startPoint: .top, endPoint: .bottom)
+            // The artwork's lower edge eases into the title band below.
+            LinearGradient(stops: [
+                .init(color: .clear, location: 0.86),
+                .init(color: page.opacity(0.62), location: 1.0)
+            ], startPoint: .top, endPoint: .bottom)
         }
-        .frame(width: pageWidth, height: gap + h + infoH)
+        .frame(width: pageWidth, height: coverHeight)
         .clipped()
+        // Only game switches animate; the pull stretch stays finger-tracked.
         .animation(.easeInOut(duration: 0.42), value: current)
     }
 
@@ -4505,7 +4498,7 @@ struct LCHomeGalleryView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, sideMargin)
-        .padding(.bottom, 20)
+        .padding(.bottom, 12)
     }
 
     // MARK: All games section + dark cards
@@ -4563,8 +4556,8 @@ struct LCHomeGalleryView: View {
     }
 
     private var darkGameGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible(minimum: 0), spacing: 10),
-                            GridItem(.flexible(minimum: 0), spacing: 10)], spacing: 10) {
+        LazyVGrid(columns: [GridItem(.flexible(minimum: 0), spacing: 6),
+                            GridItem(.flexible(minimum: 0), spacing: 6)], spacing: 6) {
             ForEach(Array(visibleApps.enumerated()), id: \.offset) { index, app in
                 coverNameCard(app: app, active: index == current)
             }
@@ -4572,36 +4565,38 @@ struct LCHomeGalleryView: View {
         .padding(.horizontal, sideMargin)
     }
 
-    // Grid tab: the reference card is artwork first, with the name printed on
-    // a soft dark wash. No tile icon and no play glyph — the whole card is the
-    // launch target, as it is on the cover above.
+    // Grid card: full-bleed artwork with the name printed at the bottom-left
+    // over a soft upward wash. No tile icon or play glyph; a deep shadow lifts
+    // the card off the page so the grid reads as a stack of floating covers.
     @ViewBuilder
     private func coverNameCard(app: LCAppModel, active: Bool) -> some View {
         let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        ZStack(alignment: .leading) {
+        ZStack(alignment: .bottomLeading) {
             Image(uiImage: cover)
                 .resizable().scaledToFill()
-                .frame(height: 94)
+                .frame(height: 102)
                 .clipped()
             LinearGradient(stops: [
-                .init(color: .black.opacity(0.86), location: 0.0),
-                .init(color: .black.opacity(0.48), location: 0.55),
-                .init(color: .clear, location: 1.0)
-            ], startPoint: .leading, endPoint: .trailing)
+                .init(color: .clear, location: 0.34),
+                .init(color: .black.opacity(0.52), location: 0.72),
+                .init(color: .black.opacity(0.88), location: 1.0)
+            ], startPoint: .top, endPoint: .bottom)
             Text(app.displayName)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(2)
                 .padding(.leading, 12)
-                .padding(.trailing, 22)
+                .padding(.trailing, 10)
+                .padding(.bottom, 11)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(height: 94)
+        .frame(height: 102)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(active ? 0.55 : 0.10), lineWidth: active ? 1.4 : 0.6)
         )
+        .shadow(color: .black.opacity(0.55), radius: 14, x: 0, y: 7)
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .onTapGesture { onLaunch(app) }
         .contextMenu {
