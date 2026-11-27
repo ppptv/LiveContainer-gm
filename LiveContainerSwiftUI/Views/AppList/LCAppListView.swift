@@ -4568,39 +4568,53 @@ struct LCHomeGalleryView: View {
     @ViewBuilder
     private func coverNameCard(app: LCAppModel, active: Bool) -> some View {
         let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        ZStack(alignment: .bottomLeading) {
+        // Reference card: a rounded artwork inset in a light surface, with the
+        // name and footprint on the left and a blue action capsule on the right.
+        // System semantic colours keep it correct in both light and dark mode.
+        VStack(spacing: 9) {
             Image(uiImage: cover)
                 .resizable().scaledToFill()
-                .frame(height: 102)
+                .frame(height: 132)
+                .frame(maxWidth: .infinity)
                 .clipped()
-            LinearGradient(stops: [
-                .init(color: .clear, location: 0.34),
-                .init(color: .black.opacity(0.52), location: 0.72),
-                .init(color: .black.opacity(0.88), location: 1.0)
-            ], startPoint: .top, endPoint: .bottom)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.displayName)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(LCGallerySizeStore.shared.sizeText(for: app))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
+                .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+
+            HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(app.displayName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Text(LCGallerySizeStore.shared.sizeText(for: app))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                // Styled as a button; the whole card owns the tap so one touch
+                // can never launch the same app twice.
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill").font(.system(size: 10, weight: .bold))
+                    Text("启动").font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 7)
+                .background(Color(red: 0.05, green: 0.48, blue: 0.98), in: Capsule())
             }
-            .padding(.leading, 12)
-            .padding(.trailing, 10)
-            .padding(.bottom, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 11)
+            .padding(.bottom, 11)
         }
-        .frame(height: 102)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(8)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(active ? 0.55 : 0.10), lineWidth: active ? 1.4 : 0.6)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.blue.opacity(active ? 0.60 : 0), lineWidth: active ? 1.5 : 0)
         )
-        .shadow(color: .black.opacity(0.55), radius: 14, x: 0, y: 7)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .shadow(color: .black.opacity(0.24), radius: 14, x: 0, y: 6)
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture { onLaunch(app) }
         .contextMenu {
             Button("启动", systemImage: "play") { onLaunch(app) }
