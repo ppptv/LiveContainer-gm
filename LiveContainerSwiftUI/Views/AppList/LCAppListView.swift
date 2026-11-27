@@ -103,6 +103,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // deliberately separate from LCUseGalleryHome, which stays the settings
     // safety valve for the classic list.
     @State private var homePageMode = 0
+    // Portrait gallery dock: 0 = poster home, 1 = app list. Selection is owned
+    // here so the dock can drive both surfaces; scrolling also writes it back.
+    @State private var galleryDockSelection = 0
 
     // Gallery card context-menu uninstall target + confirmation.
     @State private var galleryUninstallApp: LCAppModel?
@@ -174,6 +177,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 apps: sortedApps,
                                 hiddenApps: sortedHiddenApps,
                                 topBeadHidden: $topBeadHidden,
+                                dockSelection: $galleryDockSelection,
                                 onLaunch: { app in
                                     Task { @MainActor in
                                         do { try await app.runApp() }
@@ -233,22 +237,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             // Sliding the bead away must not leave a hole: off
                             // the bar it can float, so it leaves with the bar
                             // instead of fading into reserved space.
-                            .overlay(alignment: .bottomTrailing) {
-                                // Portrait only. In landscape the showcase is
-                                // the whole screen — the bead floats over the
-                                // first poster and there is nothing to scroll
-                                // it away with, so it simply isn't there.
+                            // One bottom dock replaces the old left switcher
+                            // and the right-hand install bead. Portrait only:
+                            // in landscape the showcase owns the whole screen.
+                            .overlay(alignment: .bottom) {
                                 if verticalSizeClass != .compact {
-                                    installBeadMenu
-                                }
-                            }
-                            // Same overlay layer as the red bead, mirrored to
-                            // the leading edge. Both carry the same 20pt edge
-                            // and 22pt bottom inset, so their baselines line
-                            // up exactly on every device.
-                            .overlay(alignment: .bottomLeading) {
-                                if verticalSizeClass != .compact {
-                                    homeModeSwitcher
+                                    galleryDock
                                 }
                             }
                         }
@@ -1344,10 +1338,129 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    // Left-side page switcher. Game is the default surface; software is a
-    // reserved placeholder for a later design. Keeping this on the outer
-    // Group (not inside either branch) means the switcher survives a switch,
-    // so the user can always get back.
+    // Portrait bottom dock — one pale glass capsule with five icon-only tools.
+    // Order follows the reference: home, list, install (dark centre), SideStore,
+    // sort. Every action reuses the proven LC handlers; only the shell is new.
+    private var galleryDock: some View {
+        HStack(spacing: 4) {
+            dockChip(symbol: "house.fill", active: galleryDockSelection == 0, label: "首页") {
+                galleryDockSelection = 0
+            }
+            dockChip(symbol: "list.bullet", active: galleryDockSelection == 1, label: "列表") {
+                galleryDockSelection = 1
+            }
+            // Centre tool: everything the old red bead did, now the dark
+            // selected-looking button from the reference. Tapping adds an app;
+            // the menu holds the rest.
+            Menu {
+                installMenuItems
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 22, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 48, height: 44)
+                    .background(Color(red: 0.13, green: 0.13, blue: 0.15),
+                                in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            } primaryAction: {
+                choosingIPA = true
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("安装应用")
+
+            // SideStore: open it when installed, otherwise show help.
+            Menu {
+                if UserDefaults.sideStoreExist() {
+                    Button {
+                        LCUtils.openSideStore(delegate: self)
+                    } label: {
+                        Label("SideStore", systemImage: "app.badge")
+                    }
+                } else {
+                    Button("Help", systemImage: "questionmark") { helpPresent = true }
+                }
+                Button("lc.appList.openLink".loc, systemImage: "link") {
+                    Task { await onOpenWebViewTapped() }
+                }
+            } label: {
+                dockGlyph(symbol: "app.badge", label: "SideStore")
+            }
+            .buttonStyle(.plain)
+
+            // Sort: same picker as the native toolbar, minus the bar.
+            Menu {
+                Picker("Sort by", selection: $sharedAppSortManager.appSortType) {
+                    ForEach(AppSortType.allCases, id: \.self) { sortType in
+                        Label(sortType.displayName, systemImage: sortType.systemImage).tag(sortType)
+                    }
+                }
+                .onChange(of: sharedAppSortManager.appSortType) { newValue in
+                    if newValue == .custom { customSortViewPresent = true }
+                }
+                if sharedAppSortManager.appSortType == .custom {
+                    Divider()
+                    Button {
+                        customSortViewPresent = true
+                    } label: {
+                        Label("lc.appList.sort.customManage".loc, systemImage: "slider.horizontal.3")
+                    }
+                }
+            } label: {
+                dockGlyph(symbol: "line.3.horizontal.decrease.circle", label: "排序")
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.regularMaterial, in: Capsule())
+        .overlay {
+            Capsule().stroke(Color.white.opacity(0.72), lineWidth: 1).allowsHitTesting(false)
+        }
+        .shadow(color: Color.black.opacity(0.22), radius: 12, y: 4)
+        .environment(\.colorScheme, .light)
+        .padding(.bottom, 22)
+    }
+
+    @ViewBuilder
+    private var installMenuItems: some View {
+        Button("lc.appList.installFromIpa".loc, systemImage: "doc.badge.plus") {
+            choosingIPA = true
+        }
+        if sharedModel.multiLCStatus != 2 {
+            Button("lc.appList.installFromUrl".loc, systemImage: "link.badge.plus") {
+                Task { await startInstallFromUrl() }
+            }
+        }
+    }
+
+    private func dockChip(symbol: String, active: Bool, label: String,
+                          action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 18, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? Color.black : Color.black.opacity(0.48))
+                .frame(width: 48, height: 44)
+                .background(active ? Color.white.opacity(0.85) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func dockGlyph(symbol: String, label: String) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 18, weight: .regular))
+            .foregroundStyle(Color.black.opacity(0.55))
+            .frame(width: 48, height: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .accessibilityLabel(label)
+    }
+
+    // Left-side page switcher (software placeholder only). Game is the default
+    // surface; software is a reserved placeholder for a later design. Keeping
+    // this on the outer Group means the switcher survives a switch, so the user
+    // can always get back.
     private var homeModeSwitcher: some View {
         HStack(spacing: 2) {
             homeModeChip(title: "游戏", symbol: "gamecontroller", active: homePageMode == 0) {
@@ -2154,6 +2267,13 @@ final class LCGalleryOnlineCoverStore {
         englishTitlesLock.lock()
         defer { englishTitlesLock.unlock() }
         return englishTitles[name]
+    }
+
+    // The portrait white card shows the resolved English title on line one and
+    // the bundle's own (usually Chinese) name on line two. Resolution already
+    // happened during cover lookup, so this is a synchronous cache read.
+    static func englishName(for displayName: String) -> String? {
+        cachedEnglishTitle(for: displayName)
     }
 
     private static func storeEnglishTitle(_ title: String, for name: String) {
@@ -3780,6 +3900,9 @@ struct LCHomeGalleryView: View {
     // Owned by the navigation bar's host, written from the scroll observer
     // below: direction of the list decides whether the plus bead is showing.
     @Binding var topBeadHidden: Bool
+    // Bottom dock selection: 0 = poster home, 1 = app list. Written by the
+    // dock and fed back from scroll position so the highlight stays truthful.
+    @Binding var dockSelection: Int
     var onLaunch: (LCAppModel) -> Void
     var onOpenSettings: (LCAppModel) -> Void
     var onUninstall: (LCAppModel) -> Void
@@ -3941,20 +4064,25 @@ struct LCHomeGalleryView: View {
     private var portraitPage: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
-                // Hero is full-bleed; only the sections below use side padding.
-                hero
-                VStack(alignment: .leading, spacing: 0) {
-                    iconRail
-                    cardsSection
-                    hiddenSection
-                    // Clearance for the home indicator AND for the bead, which
-                    // now floats in the bottom-right corner: without the extra
-                    // room the last card parked straight under it.
-                    Spacer(minLength: 96)
+                if dockSelection == 0 {
+                    // Home surface: one clean, full-bleed poster with the white
+                    // paging card. No icon rail, no title, no run pill.
+                    hero
+                } else {
+                    // List surface: the existing all-apps grid.
+                    VStack(alignment: .leading, spacing: 0) {
+                        cardsSection
+                        hiddenSection
+                        Spacer(minLength: 110)
+                    }
+                    .padding(.horizontal, sideMargin)
+                    .padding(.top, 56)
                 }
-                .padding(.horizontal, sideMargin)
             }
         }
+        // Rebuild when the dock surface changes so a list scrolled to the
+        // bottom cannot leave the home poster parked halfway off-screen.
+        .id("portrait-\(dockSelection)")
         .ignoresSafeArea(edges: .top)
         // Portrait stays night-side no matter what the system is set to. The
         // page is built on artwork, not on system surfaces: everything from the
@@ -4162,7 +4290,9 @@ struct LCHomeGalleryView: View {
     private var pageWidth: CGFloat { UIScreen.main.bounds.width }
 
     private var heroHeight: CGFloat {
-        min(UIScreen.main.bounds.height * 0.66, 620)
+        // Full-bleed poster: the cover now owns the whole screen and the app
+        // list is a separate dock surface, so the hero fills the viewport.
+        UIScreen.main.bounds.height
     }
 
     private var portraitHero: some View {
@@ -4170,29 +4300,99 @@ struct LCHomeGalleryView: View {
         let height = heroHeight
         return ZStack(alignment: .bottom) {
             heroBackground(width: width, height: height)
-
-            VStack(spacing: 4) {
-                Spacer()
-                heroText(compact: false)
-                runButton(compact: false)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 6)
-                // The page dots are gone: with the poster no longer rotating
-                // they only duplicated what the highlighted icon in the rail
-                // already shows. The bottom inset keeps the CTA off the fade.
-                Spacer().frame(height: 38)
-            }
-            .frame(width: width, height: height, alignment: .bottom)
+            // The only thing drawn on top of the artwork is the white paging
+            // card. Game title, run pill and icon rail are all gone — the
+            // reference asks for one clean poster.
+            whiteCardPager
+                .padding(.bottom, 94)
         }
-        // Bottom-aligned so the taller stretched background grows upwards and
-        // keeps its bottom edge glued to the hero. Not clipped on purpose:
-        // clipping here would cut exactly that fill.
         .frame(width: width, height: height, alignment: .bottom)
         .contentShape(Rectangle())
-        .gesture(heroGesture)
+        // Switching is driven by the white card now; swiping the poster itself
+        // would fight the card's pager for the same gesture.
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
         )
+    }
+
+    // MARK: White paging card
+
+    // Live finger offset of the white card row, kept separate from landscape's
+    // dragX so a rotation can never carry a half-swiped card into the poster.
+    @State private var cardDragX: CGFloat = 0
+
+    private var whiteCardWidth: CGFloat { pageWidth - 2 * sideMargin - 20 }
+
+    private var whiteCardPager: some View {
+        let w = whiteCardWidth
+        let step = w + 14
+        return GeometryReader { _ in
+            HStack(spacing: 14) {
+                ForEach(Array(apps.enumerated()), id: \.offset) { index, app in
+                    whiteInfoCard(app: app)
+                        .frame(width: w, height: 84)
+                }
+            }
+            .padding(.horizontal, sideMargin + 10)
+            .offset(x: -CGFloat(current) * step + cardDragX)
+            .animation(.interactiveSpring(response: 0.42, dampingFraction: 0.9), value: current)
+            .gesture(
+                DragGesture(minimumDistance: 10)
+                    .onChanged { value in
+                        withTransaction(Transaction(animation: nil)) {
+                            cardDragX = value.translation.width
+                        }
+                    }
+                    .onEnded { value in
+                        let dx = value.translation.width
+                        var next = current
+                        if dx < -30 { next = min(current + 1, apps.count - 1) }
+                        else if dx > 30 { next = max(current - 1, 0) }
+                        withTransaction(Transaction(animation: nil)) { cardDragX = 0 }
+                        withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.9)) {
+                            current = next
+                        }
+                    }
+            )
+        }
+        .frame(height: 84)
+        .clipped()
+    }
+
+    @ViewBuilder
+    private func whiteInfoCard(app: LCAppModel) -> some View {
+        let zh = app.displayName
+        let en = LCGalleryOnlineCoverStore.englishName(for: zh) ?? zh
+        HStack(spacing: 14) {
+            if let icon = app.appInfo.iconIsDarkIcon(false) {
+                Image(uiImage: icon)
+                    .resizable().scaledToFill()
+                    .frame(width: 54, height: 54)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(en)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .lineLimit(1)
+                if en != zh {
+                    Text(zh)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.black.opacity(0.58))
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 15)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.20), radius: 10, y: 4)
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .onTapGesture {
+            withAnimation(.interactiveSpring(response: 0.42, dampingFraction: 0.9)) {
+                onLaunch(app)
+            }
+        }
     }
 
     // MARK: Landscape showcase — three posters per page, hand-swiped
@@ -4634,42 +4834,28 @@ struct LCHomeGalleryView: View {
                 let key = apps[current].appInfo.bundleIdentifier() ?? "\(current)"
                 // Sharp, edge-to-edge poster. It used to be blurred for
                 // non-portrait covers, which fogged the status bar area too.
+                // One clean poster, edge to edge. No caption scrim and no
+                // bottom mask — the reference wants the whole artwork visible.
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: width, height: artHeight)
                     .clipped()
-                    // Dissolve the bottom of the artwork into the blurred page
-                    // colour, so hero and list read as one continuous surface.
-                    .mask(
-                        LinearGradient(stops: [
-                            .init(color: .black, location: 0.0),
-                            .init(color: .black, location: 0.66),
-                            .init(color: .black.opacity(0.86), location: 0.84),
-                            .init(color: .clear, location: 1.0)
-                        ], startPoint: .top, endPoint: .bottom)
-                    )
                     .id("bg-\(key)-\(coverTick)")
+                    .transition(.opacity)
             } else {
                 LinearGradient(colors: [
                     Color(red: 0.09, green: 0.36, blue: 0.72),
                     Color(red: 0.02, green: 0.08, blue: 0.18)
                 ], startPoint: .top, endPoint: .bottom)
             }
-
-            // Scrim only where the caption sits: nothing on top, so the status
-            // bar and upper artwork stay crisp. It also fades out at the very
-            // bottom to match the artwork mask.
-            LinearGradient(stops: [
-                .init(color: .clear, location: 0.0),
-                .init(color: .clear, location: 0.46),
-                .init(color: Color.black.opacity(0.22), location: 0.70),
-                .init(color: Color.black.opacity(0.56), location: 0.87),
-                .init(color: .clear, location: 1.0)
-            ], startPoint: .top, endPoint: .bottom)
         }
         .frame(width: width, height: artHeight)
         .clipped()
+        // The white card drives `current`. Cross-fading the artwork on that
+        // change is what makes the whole poster feel like it follows the card
+        // instead of snapping the moment the index rolls over.
+        .animation(.easeInOut(duration: 0.42), value: current)
     }
 
     @ViewBuilder
