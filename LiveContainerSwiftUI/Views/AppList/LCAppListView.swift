@@ -4169,9 +4169,14 @@ struct LCHomeGalleryView: View {
         )
     }
 
-    // Native 16:9 artwork. Overscroll adds a capped, damped amount so the pull
-    // feels elastic without ever distorting the cover during normal scrolling.
-    private var coverArtHeight: CGFloat { pageWidth * 9 / 16 }
+    // Poster-style artwork that fills roughly the top half of the screen, with
+    // the detail block floating over its lower gradient. The native 16:9 height
+    // is kept as a floor so small devices never crop the title band away.
+    // Overscroll adds a capped, damped amount so the pull feels elastic without
+    // distorting the cover during normal scrolling.
+    private var coverArtHeight: CGFloat {
+        max(UIScreen.main.bounds.height * 0.5 - detailInfoHeight, pageWidth * 9 / 16)
+    }
     private var headerHeight: CGFloat { coverArtHeight + detailInfoHeight }
     private var stretchedCoverHeight: CGFloat { coverArtHeight + min(pullDown * 0.26, 62) }
 
