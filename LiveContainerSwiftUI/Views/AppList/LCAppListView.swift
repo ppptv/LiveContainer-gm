@@ -1338,30 +1338,35 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    // Portrait bottom dock — one pale glass capsule with five icon-only tools.
-    // Order follows the reference: home, list, install (dark centre), SideStore,
-    // sort. Every action reuses the proven LC handlers; only the shell is new.
+    // Portrait bottom dock — one wide pale glass capsule with five icon-only
+    // tools. Apple-style 16pt side margins: the bar stretches close to the
+    // screen edges instead of floating as a small centred pill. Order follows
+    // the reference: home, list, install (soft pink centre), SideStore, sort.
+    // Every action reuses the proven LC handlers; only the shell is new.
     private var galleryDock: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 0) {
             dockChip(symbol: "house.fill", active: galleryDockSelection == 0, label: "首页") {
                 galleryDockSelection = 0
             }
             dockChip(symbol: "list.bullet", active: galleryDockSelection == 1, label: "列表") {
                 galleryDockSelection = 1
             }
-            // Centre tool: everything the old red bead did, now the dark
-            // selected-looking button from the reference. Tapping adds an app;
-            // the menu holds the rest.
+            // Centre tool: everything the old red bead did, keeping its soft
+            // pink glass tint. Tapping adds an app; the menu holds the rest.
             Menu {
                 installMenuItems
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 22, weight: .heavy))
                     .foregroundStyle(.white)
-                    .frame(width: 48, height: 44)
-                    .background(Color(red: 0.13, green: 0.13, blue: 0.15),
-                                in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .frame(width: 58, height: 44)
                     .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .glassEffect(
+                        .regular.tint(Color(red: 1.0, green: 0.52, blue: 0.52).opacity(0.55)),
+                        in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    )
+                    .shadow(color: Color(red: 1.0, green: 0.38, blue: 0.38).opacity(0.34),
+                            radius: 10, y: 3)
             } primaryAction: {
                 choosingIPA = true
             }
@@ -1410,7 +1415,10 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
             .buttonStyle(.plain)
         }
+        // Give the five slots equal width inside a bar that nearly spans the
+        // screen, then let the capsule background fill that frame.
         .padding(.horizontal, 8)
+        .frame(width: UIScreen.main.bounds.width - 32)
         .padding(.vertical, 4)
         .background(.regularMaterial, in: Capsule())
         .overlay {
@@ -1439,10 +1447,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             Image(systemName: symbol)
                 .font(.system(size: 18, weight: active ? .semibold : .regular))
                 .foregroundStyle(active ? Color.black : Color.black.opacity(0.48))
-                .frame(width: 48, height: 44)
-                .background(active ? Color.white.opacity(0.85) : Color.clear,
-                            in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                .frame(maxWidth: .infinity, minHeight: 44)
+                // A soft, low-contrast capsule for the current page — not the
+                // stark white plate from the first pass.
+                .background(active ? Color.white.opacity(0.46) : Color.clear,
+                            in: Capsule())
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
@@ -1452,8 +1462,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         Image(systemName: symbol)
             .font(.system(size: 18, weight: .regular))
             .foregroundStyle(Color.black.opacity(0.55))
-            .frame(width: 48, height: 44)
-            .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(Capsule())
             .accessibilityLabel(label)
     }
 
