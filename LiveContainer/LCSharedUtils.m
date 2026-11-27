@@ -57,9 +57,15 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
     static dispatch_once_t once;
     static NSString *appGroupID = @"Unknown";
     dispatch_once(&once, ^{
+        // A simulator build carries no signing team, so teamIdentifier is nil
+        // and stringByAppendingPathExtension: throws during launch. Use a
+        // harmless placeholder there: no group container exists on the
+        // simulator anyway and the UserDefaults helper already falls back to
+        // standard. Real devices keep the exact previous behaviour.
+        NSString *team = [self teamIdentifier] ?: @"SIMULATOR";
         NSArray* possibleAppGroups = @[
-            [@"group.com.SideStore.SideStore" stringByAppendingPathExtension:[self teamIdentifier]],
-            [@"group.com.rileytestut.AltStore" stringByAppendingPathExtension:[self teamIdentifier]]
+            [@"group.com.SideStore.SideStore" stringByAppendingPathExtension:team],
+            [@"group.com.rileytestut.AltStore" stringByAppendingPathExtension:team]
         ];
         
         // we prefer app groups with "Apps" in it, which indicate this app group is actually used by the store.
