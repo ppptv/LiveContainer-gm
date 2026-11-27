@@ -98,6 +98,12 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // Landscape owns the full screen: no pill, no tab bar there.
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
+    // Two home surfaces. Game is the default; software is a reserved page
+    // that only shows a placeholder until its own design is done. This is
+    // deliberately separate from LCUseGalleryHome, which stays the settings
+    // safety valve for the classic list.
+    @State private var homePageMode = 0
+
     // Gallery card context-menu uninstall target + confirmation.
     @State private var galleryUninstallApp: LCAppModel?
     @State private var galleryUninstallShow = false
@@ -145,7 +151,9 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // New body: big-card home gallery by default, classic list via toggle.
     var body: some View {
         Group {
-            if useGalleryHome {
+            if homePageMode == 1 {
+                softwarePlaceholder
+            } else if useGalleryHome {
                 // Keep the gallery inside the same NavigationView as the original
                 // app list, so the native install / SideStore / link / sort toolbar
                 // items are present and use the existing, proven actions.
@@ -234,6 +242,15 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                     installBeadMenu
                                 }
                             }
+                            // Same overlay layer as the red bead, mirrored to
+                            // the leading edge. Both carry the same 20pt edge
+                            // and 22pt bottom inset, so their baselines line
+                            // up exactly on every device.
+                            .overlay(alignment: .bottomLeading) {
+                                if verticalSizeClass != .compact {
+                                    homeModeSwitcher
+                                }
+                            }
                         }
                         }
                         .navigationViewStyle(StackNavigationViewStyle())
@@ -247,6 +264,39 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             } else {
                 legacyBody
             }
+        }
+    }
+
+    // Reserved surface for the software home. Intentionally a plain, quiet
+    // placeholder: the visual design is coming in a later pass. It carries
+    // its own switcher so the user can always return to the game surface.
+    private var softwarePlaceholder: some View {
+        ZStack {
+            Color(red: 0.055, green: 0.075, blue: 0.13)
+                .ignoresSafeArea()
+            VStack(spacing: 14) {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 46, weight: .light))
+                    .foregroundStyle(Color.white.opacity(0.82))
+                Text("软件")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("此页面待设计")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.white.opacity(0.55))
+            }
+            .padding(.bottom, 96)
+        }
+        .overlay(alignment: .bottomLeading) {
+            if verticalSizeClass != .compact {
+                homeModeSwitcher
+            }
+        }
+        // The switcher is portrait-only. A turn while the software placeholder
+        // is up would otherwise strand the landscape showcase behind an empty
+        // page with no way back, so returning to the game surface is automatic.
+        .onChange(of: verticalSizeClass) { mode in
+            if mode == .compact && homePageMode == 1 { homePageMode = 0 }
         }
     }
 
@@ -1292,6 +1342,54 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             errorInfo = error.localizedDescription
             errorShow = true
         }
+    }
+
+    // Left-side page switcher. Game is the default surface; software is a
+    // reserved placeholder for a later design. Keeping this on the outer
+    // Group (not inside either branch) means the switcher survives a switch,
+    // so the user can always get back.
+    private var homeModeSwitcher: some View {
+        HStack(spacing: 2) {
+            homeModeChip(title: "游戏", symbol: "gamecontroller", active: homePageMode == 0) {
+                homePageMode = 0
+            }
+            homeModeChip(title: "软件", symbol: "list.bullet", active: homePageMode == 1) {
+                homePageMode = 1
+            }
+        }
+        // 42pt chip + 3pt inset on each side = 48pt, exactly the height of
+        // the red install bead, so both bottom-anchored controls share one
+        // centre line rather than merely one baseline.
+        .padding(3)
+        .lcGlassCapsule()
+        .overlay {
+            Capsule()
+                .stroke(Color.white.opacity(0.72), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .shadow(color: Color.black.opacity(0.24), radius: 12, y: 4)
+        // The reference is a pale glass pill with a white selected chip and
+        // dark glyphs. Pinning the light scheme keeps that exact contrast
+        // regardless of the system setting or the dark poster underneath.
+        .environment(\.colorScheme, .light)
+        .padding(.leading, 20)
+        .padding(.bottom, 22)
+    }
+
+    private func homeModeChip(title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: active ? .semibold : .regular))
+                Text(title)
+                    .font(.system(size: 14, weight: active ? .semibold : .medium))
+            }
+            .foregroundStyle(active ? Color.black : Color.black.opacity(0.55))
+            .frame(width: 76, height: 42)
+            .background(active ? Color.white : Color.clear, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     // Everything the old three-glyph pill could do, folded into one bead.
