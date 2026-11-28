@@ -199,35 +199,43 @@ struct LCFanDeckView: View {
     @State private var sortShown = false
 
     var body: some View {
-        // GeometryReader gives the ONE authoritative width/height for this page.
-        // Everything below measures from it; nothing measures itself.
-        GeometryReader { geo in
-            let size = cardSize(in: geo.size)
-            // LAYOUT SHAPE — deliberately NOT a centred ZStack.
-            //
-            // A ZStack centres every child in the union of their sizes, so any
-            // child that momentarily reports a different size re-centres the
-            // whole page. That is what made the deck land at a new height on
-            // every touch: entering a swipe adds a second backdrop image, the
-            // union changes, and the top bar / deck / dock shift together.
-            // Here each layer is pinned with explicit alignment and the
-            // backdrop is a `.background`, so it cannot participate in layout.
-            //
-            // The backdrop is applied OUTSIDE the sized box: `.ignoresSafeArea()`
-            // on a child of `.background` cannot escape a parent that is already
-            // inset to the safe area, which is why the status-bar strip stayed
-            // white.
-            deckLayer(size: size, canvasWidth: geo.size.width,
-                      canvasHeight: geo.size.height - (mode == 0 ? 82 : 56) - 76)
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
-                .overlay(alignment: .top) { chrome(size: size) }
-                .overlay(alignment: .bottom) { dock.padding(.bottom, 8) }
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
-                .clipped()
-                .background {
-                    backdrop(coverOf: incomingCover, progress: phase)
-                        .ignoresSafeArea()
-                }
+        // FIX v109 — the backdrop must be a ROOT-LEVEL sibling, not a
+        // `.background` on an already-inset container.
+        //
+        // `.background { … .ignoresSafeArea() }` cannot work here: the view it
+        // hangs off is already inset to the safe area, so its background is
+        // inset too and the status-bar strip and home-indicator band stay on
+        // the system's own background. Only a sibling at the top of the tree
+        // receives the full-screen proposal and can expand into those regions.
+        //
+        // This is safe again (it was not before) because `backdrop` can no
+        // longer report an intrinsic size: every layer is `Color.clear.overlay`,
+        // so the ZStack takes the screen proposal and nothing is re-centred.
+        ZStack {
+            backdrop(coverOf: incomingCover, progress: phase)
+                .ignoresSafeArea()
+
+            GeometryReader { geo in
+                let size = cardSize(in: geo.size)
+                // LAYOUT SHAPE — deliberately NOT a centred ZStack for the
+                // content. A ZStack centres children in the union of their
+                // sizes, so anything that momentarily reports a different size
+                // re-centres the page; that is what used to move the deck to a
+                // new height on every touch. Each layer here is pinned with an
+                // explicit alignment inside a fixed-size box instead.
+                deckLayer(size: size, canvasWidth: geo.size.width,
+                          canvasHeight: geo.size.height - (mode == 0 ? 82 : 56) - 76)
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                    .overlay(alignment: .top) { chrome(size: size) }
+                    .overlay(alignment: .bottom) { dock.padding(.bottom, 8) }
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                    .clipped()
+                    // The sort panel lives OUTSIDE the clipped page so its
+                    // leading inset cannot be sliced at the left edge.
+                    .overlay(alignment: .topLeading) {
+                        if sortShown { sortPanel }
+                    }
+            }
         }
         .onAppear { topBeadHidden = false }
         .onChange(of: apps.count) { n in
@@ -642,5 +650,61 @@ struct LCFanDeckView: View {
                         .fill(selected ? FanDeckTheme.pinkSoft : Color.clear))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Sort menu
+
+extension LCFanDeckView {
+    /// The sort panel, anchored under the grid button.
+    ///
+    /// It hangs OUTSIDE the clipped page (see `body`), because a panel anchored
+    /// with a leading inset inside the clipped frame was being sliced at the
+    /// left edge in an earlier version. Here it is an `.overlay` on the page, so
+    /// it can draw anywhere on screen and nothing trims it.
+    var sortPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("排序方式")
+                .font(.system(size: 10.5, weight: .heavy))
+                .tracking(1.4)
+                .foregroundStyle(FanDeckTheme.muted)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+
+            ForEach(AppSortType.allCases, id: \.self) { type in
+                Button {
+                    if type == .custom { onCustomSort() } else { onSortChange(type) }
+                    withAnimation(.easeOut(duration: 0.16)) { sortShown = false }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(type.displayName)
+                            .font(.system(size: 13,
+                                          weight: sortType == type ? .heavy : .semibold))
+                        Spacer(minLength: 0)
+                        if sortType == type {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .heavy))
+                        }
+                    }
+                    .foregroundStyle(sortType == type ? FanDeckTheme.pink : FanDeckTheme.ink)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+        .frame(width: 216)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.05), lineWidth: 1)
+        )
+        .shadow(color: FanDeckTheme.shadow.opacity(0.22), radius: 24, x: 0, y: 20)
+        .padding(.leading, 22)
+        .padding(.top, 58)
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
     }
 }
