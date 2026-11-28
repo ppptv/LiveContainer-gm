@@ -203,41 +203,60 @@ struct LCFanDeckView: View {
         // Everything below measures from it; nothing measures itself.
         GeometryReader { geo in
             let size = cardSize(in: geo.size)
-            ZStack {
-                backdrop(coverOf: incomingCover, progress: phase)
-                    .ignoresSafeArea()
-
-                deck(size: size, canvasWidth: geo.size.width)
-                    // The deck starts BELOW the top bar + hint row (56 + 26).
-                    // Left to the ZStack it would be centred in the remaining
-                    // height and ride up under the status bar.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, mode == 0 ? 82 : 56)
-
-                topBar
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                if mode == 0 {
-                    hintRow
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                        .padding(.top, 56)
+            // LAYOUT SHAPE — deliberately NOT a centred ZStack.
+            //
+            // A ZStack centres every child in the union of their sizes, so any
+            // child that momentarily reports a different size re-centres the
+            // whole page. That is what made the deck land at a new height on
+            // every touch: entering a swipe adds a second backdrop image, the
+            // union changes, and the top bar / deck / dock shift together.
+            // Here each layer is pinned with explicit alignment and the
+            // backdrop is a `.background`, so it cannot participate in layout.
+            //
+            // The backdrop is applied OUTSIDE the sized box: `.ignoresSafeArea()`
+            // on a child of `.background` cannot escape a parent that is already
+            // inset to the safe area, which is why the status-bar strip stayed
+            // white.
+            deckLayer(size: size, canvasWidth: geo.size.width,
+                      canvasHeight: geo.size.height - (mode == 0 ? 82 : 56) - 76)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                .overlay(alignment: .top) { chrome(size: size) }
+                .overlay(alignment: .bottom) { dock.padding(.bottom, 8) }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                .clipped()
+                .background {
+                    backdrop(coverOf: incomingCover, progress: phase)
+                        .ignoresSafeArea()
                 }
-
-                dock
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, 8)
-            }
-            // The page must never report more than the screen. Cards are parked
-            // off-screen by design; clipping keeps that overflow local so no
-            // ancestor can be widened by it (the off-centre bug).
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
-            .clipped()
         }
         .onAppear { topBeadHidden = false }
         .onChange(of: apps.count) { n in
             if n == 0 { head = 0 } else if head >= n { head = n - 1 }
         }
         .onChange(of: revision) { _ in }
+    }
+
+    /// Top bar + hint row, stacked as one column pinned to the top edge. Kept
+    /// separate from the deck so neither can move the other.
+    private func chrome(size: CGSize) -> some View {
+        VStack(spacing: 0) {
+            topBar
+            if mode == 0 { hintRow } else { Color.clear.frame(height: 0) }
+            Color.clear.frame(height: 0).layoutPriority(0)
+        }
+    }
+
+    /// The deck alone, pinned below the chrome.
+    ///
+    /// The height is explicitly capped to what is left after the chrome and the
+    /// dock. Without this cap the deck's canvas could be handed the full page
+    /// height, its centre (`y = height/2`) moved down with it, and the card
+    /// rendered from 82pt all the way past the bottom of the screen — which is
+    /// exactly what buried the dock under the card in the screenshots.
+    private func deckLayer(size: CGSize, canvasWidth: CGFloat, canvasHeight: CGFloat) -> some View {
+        deck(size: size, canvasWidth: canvasWidth)
+            .frame(height: canvasHeight, alignment: .top)
+            .padding(.top, mode == 0 ? 82 : 56)
     }
 
     // MARK: Sizing
@@ -292,23 +311,44 @@ struct LCFanDeckView: View {
         ZStack {
             FanDeckTheme.page
             if let current = headModel.map({ LCGalleryCoverStore.shared.cover(for: $0, wide: false) }) {
-                Image(uiImage: current)
-                    .resizable()
-                    .scaledToFill()
-                    .scaleEffect(1.15)
-                    .blur(radius: 34, opaque: true)
+                backdropImage(current)
                     .opacity(0.40)
             }
             if let incoming {
-                Image(uiImage: incoming)
-                    .resizable()
-                    .scaledToFill()
-                    .scaleEffect(1.15)
-                    .blur(radius: 34, opaque: true)
+                backdropImage(incoming)
                     .opacity(0.40 * Double(progress))
             }
             FanDeckTheme.page.opacity(0.34)
         }
+    }
+
+    /// A backdrop layer that CANNOT dictate the container's size.
+    ///
+    /// THE ROOT CAUSE of "every touch re-arranges the page": this used to be a
+    /// bare `Image.resizable().scaledToFill()`. `scaledToFill` preserves the
+    /// image's INTRINSIC pixel size (covers are often 1024×1024pt), so the
+    /// enclosing ZStack grew to ~1024pt square instead of the screen. Everything
+    /// else in that ZStack — top bar, deck, dock — was then aligned or centred
+    /// against that oversized box, which is why the title, the card and the
+    /// dock landed at a different height every time.
+    ///
+    /// It got worse during a swipe: `incomingCover` appears the moment `phase`
+    /// becomes non-zero, adding a second image, changing the intrinsic size
+    /// again and re-centring the whole page — the "一碰就错位" jitter.
+    ///
+    /// `Color.clear.overlay { … }` makes the layer adopt the size of its parent
+    /// proposal; the image fills it and is clipped. The layer can then never
+    /// influence layout, no matter what the artwork's pixel dimensions are.
+    private func backdropImage(_ image: UIImage) -> some View {
+        Color.clear
+            .overlay {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .scaleEffect(1.15)
+                    .blur(radius: 34, opaque: true)
+            }
+            .clipped()
     }
 
     // MARK: Deck
@@ -390,11 +430,11 @@ struct LCFanDeckView: View {
                               y: size.height / 2)
             }
         }
-        // The canvas is exactly one card tall, so `.position` above resolves
-        // against a known box and the card lands with its TOP edge at 0.
-        // Vertical placement is the caller's job (padding), never a magic +6.
+        // The canvas is exactly ONE CARD tall. `.position` above resolves
+        // against this box, so `y = size.height/2` puts the card's top edge at
+        // 0 — no magic offset, and no chance of the deck's own height being
+        // stretched by a parent proposal.
         .frame(width: canvasWidth, height: size.height, alignment: .top)
-        .frame(maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
         .simultaneousGesture(deckDrag)
         .onAppear { _cachedSize = size }
@@ -555,8 +595,20 @@ struct LCFanDeckView: View {
     private var dock: some View {
         HStack(spacing: 10) {
             dockButton("square.grid.2x2.fill", selected: mode == 0) { mode = 0 }
-            Button {
-                // quick actions
+            Menu {
+                Button { onInstallIPA() } label: {
+                    Label("从 IPA 安装", systemImage: "doc.badge.plus")
+                }
+                Button { onInstallURL() } label: {
+                    Label("从 URL 安装", systemImage: "link.badge.plus")
+                }
+                Button { onOpenSideStore() } label: {
+                    Label("打开 SideStore", systemImage: "app.badge.checkmark")
+                }
+                Divider()
+                Button { onOpenLink() } label: {
+                    Label("打开链接", systemImage: "safari")
+                }
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 22, weight: .bold))

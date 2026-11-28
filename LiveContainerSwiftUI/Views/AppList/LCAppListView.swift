@@ -230,9 +230,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 // the whole screen — the bead floats over the
                                 // first poster and there is nothing to scroll
                                 // it away with, so it simply isn't there.
-                                if verticalSizeClass != .compact {
-                                    installBeadMenu
-                                }
+                                //
+                                // The gallery page now owns its own dock with a
+                                // plus button, so this legacy floating bead is
+                                // hidden — it used to sit ON TOP of the new
+                                // deck as a second, redundant pink "+" in the
+                                // bottom-right corner.
+                                EmptyView()
                             }
                         }
                         }
