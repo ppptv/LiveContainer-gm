@@ -5193,6 +5193,14 @@ private struct FanCardView: View, Equatable {
         .shadow(color: FanTheme.shadow.opacity(0.42), radius: 12, x: 0, y: 8)
         .shadow(color: FanTheme.shadow.opacity(0.20), radius: 50, x: 0, y: 36)
         .shadow(color: FanTheme.shadow.opacity(0.14), radius: 3, x: 0, y: 1.5)
+        // PERF: flatten the entire card — text, gradients, rim and all three
+        // shadows — into ONE static texture. This is the same trick the iOS app
+        // switcher uses: while the deck slides, Core Animation only moves a
+        // handful of bitmaps with a transform; it never re-lays-out text or
+        // re-rasterises a blur. Because FanCardView is Equatable and its content
+        // is constant during a drag/deal, this texture is rasterised once and
+        // reused for every frame of the gesture.
+        .drawingGroup(opaque: false, colorMode: .extendedLinear)
     }
 
     // Static hairline rim only. The old version also baked a recede-dependent
