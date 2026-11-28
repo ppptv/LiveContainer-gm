@@ -5079,6 +5079,12 @@ private struct FanPose {
     /// How many slots behind the front card this one sits, 0…2. Kept as a
     /// fraction so the shading can cross-fade smoothly while the deck slides.
     var recede: Double = 0
+    // Cover Flow 3D rotation about the vertical / horizontal axes, plus a
+    // depth offset used only to bias the incoming card in front of the
+    // outgoing one so the two planes never intersect mid-swipe.
+    var yaw: Double = 0
+    var pitch: Double = 0
+    var depth: CGFloat = 0
 }
 
 // CMYK-free white mix, the same `mixWhite()` the design uses to tint the
@@ -5245,22 +5251,14 @@ struct LCFanHomeView: View {
     @Binding var topBeadHidden: Bool
 
     @State private var items: [FanItem] = []
-    @State private var index = 0
-    @State private var relShift: CGFloat = 0
-    @State private var dragW: CGFloat = 0
-    @State private var dragH: CGFloat = 0
-    @State private var dragging = false
-    @State private var flyIndex: Int? = nil
-    @State private var flyFrom = 0
-    @State private var flyX: CGFloat = 0
-    @State private var flyY: CGFloat = 0
-    @State private var flyRot: Double = 0
-    @State private var flyScale: CGFloat = 1
-    @State private var flyOpacity: Double = 1
-    @State private var fadedIndex: Int? = nil
-    @State private var fadeOpacity: Double = 1
+    // Cover Flow three-card deck. `head` is the centred app; `phase` is the
+    // master progress p ∈ [0,1] of the current swipe; `flowDir` is +1 for a
+    // left swipe (next app), -1 for a right swipe (previous app).
+    @State private var head = 0
+    @State private var phase: CGFloat = 0
+    @State private var flowDir = 1
     @State private var busy = false
-    @State private var mode = 0                 // 0 = fan cards, 1 = list
+    @State private var mode = 0                 // 0 = flow cards, 1 = list
     @State private var sortShown = false
     @State private var menuApp: LCAppModel? = nil
 
@@ -5268,7 +5266,7 @@ struct LCFanHomeView: View {
         GeometryReader { geo in
             let cardSize = fanCardSize(in: geo.size)
             ZStack {
-                FanTheme.page.ignoresSafeArea()
+                flowBackground.ignoresSafeArea()
                 VStack(spacing: 0) {
                     topBar
                     if mode == 0 {
@@ -5306,9 +5304,8 @@ struct LCFanHomeView: View {
         .onChange(of: apps.count) { _ in rebuild() }
         .onChange(of: mode) { _ in
             sortShown = false
-            dragW = 0
-            dragH = 0
-            dragging = false
+            phase = 0
+            busy = false
         }
     }
 
@@ -5326,6 +5323,28 @@ struct LCFanHomeView: View {
             w = h * 328.0 / 604.0
         }
         return CGSize(width: w, height: h)
+    }
+
+    /// The centred app's cover, heavily blurred, as the page backdrop. The
+    /// image is keyed by app identity so a swipe cross-fades the old and new
+    /// covers slowly instead of snapping — a fast change is visible as a flash.
+    private var flowBackground: some View {
+        ZStack {
+            FanTheme.page
+            if items.indices.contains(head) {
+                Image(uiImage: items[head].cover)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .scaleEffect(1.12)
+                    .blur(radius: 34, opaque: true)
+                    .opacity(0.40)
+                    .id(items[head].id)
+                    .transition(.opacity)
+            }
+            FanTheme.page.opacity(0.42)
+        }
+        .animation(.easeInOut(duration: 1.2), value: head)
     }
 
     // MARK: Top bar
@@ -5394,9 +5413,9 @@ struct LCFanHomeView: View {
             HStack(spacing: 5) {
                 ForEach(items.indices, id: \.self) { i in
                     Capsule()
-                        .fill(i == index ? FanTheme.pink : Color(red: 0.851, green: 0.855, blue: 0.890))
-                        .frame(width: i == index ? 15 : 5, height: 5)
-                        .animation(.easeOut(duration: 0.28), value: index)
+                        .fill(i == head ? FanTheme.pink : Color(red: 0.851, green: 0.855, blue: 0.890))
+                        .frame(width: i == head ? 15 : 5, height: 5)
+                        .animation(.easeOut(duration: 0.28), value: head)
                 }
             }
             .frame(height: 5)
@@ -5425,73 +5444,130 @@ struct LCFanHomeView: View {
 
     private var deckWidth: CGFloat { UIScreen.main.bounds.width }
 
-    private func visibleIndices() -> [Int] {
+    private func wrapped(_ i: Int) -> Int {
+        let n = max(items.count, 1)
+        return ((i % n) + n) % n
+    }
+
+    private func clamp01(_ v: CGFloat) -> CGFloat { max(0, min(1, v)) }
+    private func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat { a + (b - a) * t }
+    private func lerpD(_ a: Double, _ b: Double, _ t: CGFloat) -> Double { a + (b - a) * Double(t) }
+    private func smooth(_ t: CGFloat) -> CGFloat {
+        let x = clamp01(t)
+        return x * x * (3 - 2 * x)
+    }
+
+    private func mixPose(_ a: FanPose, _ b: FanPose, _ t: CGFloat) -> FanPose {
+        FanPose(x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t),
+                rot: lerpD(a.rot, b.rot, t), scale: lerp(a.scale, b.scale, t),
+                opacity: lerp(a.opacity, b.opacity, t), z: lerp(a.z, b.z, t),
+                recede: lerpD(a.recede, b.recede, t),
+                yaw: lerpD(a.yaw, b.yaw, t), pitch: lerpD(a.pitch, b.pitch, t),
+                depth: lerp(a.depth, b.depth, t))
+    }
+
+    // 0 centre · 1 left · 2 right · 3 exit-left · 4 exit-right ·
+    // 5 entry-left · 6 entry-right · 7 hidden
+    private func flowPose(_ kind: Int) -> FanPose {
+        switch kind {
+        case 0:
+            return FanPose(x: 0, y: 0, rot: 0, scale: 1, opacity: 1, z: 3, recede: 0)
+        case 1:
+            return FanPose(x: -138, y: 0, rot: 0, scale: 0.86, opacity: 1, z: 2,
+                           recede: 1, yaw: 55, depth: -70)
+        case 2:
+            return FanPose(x: 138, y: 0, rot: 0, scale: 0.86, opacity: 1, z: 2,
+                           recede: 1, yaw: -55, depth: -70)
+        case 3, 5:
+            return FanPose(x: -340, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 1,
+                           recede: 2, yaw: 82, depth: -140)
+        case 4, 6:
+            return FanPose(x: 340, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 1,
+                           recede: 2, yaw: -82, depth: -140)
+        default:
+            return FanPose(x: 0, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 0, recede: 2)
+        }
+    }
+
+    /// Left / centre / right plus one hidden staging card. Only three are
+    /// ever drawn opaque; the fourth exists solely to enter after the handoff.
+    private func flowIndices() -> [Int] {
         let n = items.count
         guard n > 0 else { return [] }
-        let span = min(5, n)
-        let half = span / 2
-        var out: [Int] = []
-        var seen = Set<Int>()
-        out.reserveCapacity(span)
-        for k in -half...half {
-            let i = ((index + k) % n + n) % n
-            if seen.insert(i).inserted { out.append(i) }
-        }
+        var out = [wrapped(head - 1), head, wrapped(head + 1)]
+        let staging = wrapped(flowDir > 0 ? head + 2 : head - 2)
+        if !out.contains(staging) { out.append(staging) }
         return out
     }
 
     private func poseFor(_ i: Int) -> FanPose {
-        // The card that just flew out keeps its own slot while the rest of the
-        // deck slides one step, so it must not inherit the shift.
-        let rel = relative(i, shift: fadedIndex == i ? 0 : relShift)
+        guard items.count > 0 else { return flowPose(7) }
+        let left = wrapped(head - 1)
+        let right = wrapped(head + 1)
+        let staging = wrapped(flowDir > 0 ? head + 2 : head - 2)
+        let active = busy && phase > 0.001
 
-        if flyIndex == i {
-            return FanPose(x: flyX, y: flyY, rot: flyRot,
-                           scale: flyScale, opacity: flyOpacity, z: 60)
+        if !active {
+            if i == head { return flowPose(0) }
+            if i == left { return flowPose(1) }
+            if i == right { return flowPose(2) }
+            return flowPose(7)
         }
 
-        let c = max(-2, min(2, rel))
-        let a = abs(c)
-        var x = c * 22
-        var y = -a * 5 - (a == 0 ? 6 : 0)
-        var rot = Double(c) * 13
-        var scale = 1 - a * 0.06
-        // No cross-fade for depth any more: cards stay opaque and pick up the
-        // shade overlay instead, which keeps them looking solid behind.
-        var opacity: Double = abs(rel) > 2 ? 0 : 1
+        let q = smooth(phase)
+        let outT = clamp01(phase / 0.5)
+        let inT = clamp01((phase - 0.5) / 0.5)
+        let gap = CGFloat(sin(Double.pi * Double(phase)))
 
-        if i == index && abs(rel) < 0.001 && (dragW != 0 || dragH != 0) {
-            x += dragW
-            y += dragH * 0.22
-            rot += Double(dragW) * 0.045
-            scale = 1.01
-            opacity = 1
+        if flowDir > 0 {
+            if i == head {
+                var p = mixPose(flowPose(0), flowPose(1), q)
+                p.depth -= 60 * gap
+                p.x -= 45 * gap
+                p.z = 4
+                return p
+            }
+            if i == right {
+                var p = mixPose(flowPose(2), flowPose(0), q)
+                p.depth += 90 * gap
+                p.x += 120 * gap
+                p.scale -= 0.04 * gap
+                p.z = 5
+                return p
+            }
+            if i == left { return mixPose(flowPose(1), flowPose(3), outT) }
+            if i == staging { return mixPose(flowPose(6), flowPose(2), inT) }
+        } else {
+            if i == head {
+                var p = mixPose(flowPose(0), flowPose(2), q)
+                p.depth -= 60 * gap
+                p.x += 45 * gap
+                p.z = 4
+                return p
+            }
+            if i == left {
+                var p = mixPose(flowPose(1), flowPose(0), q)
+                p.depth += 90 * gap
+                p.x -= 120 * gap
+                p.scale -= 0.04 * gap
+                p.z = 5
+                return p
+            }
+            if i == right { return mixPose(flowPose(2), flowPose(4), outT) }
+            if i == staging { return mixPose(flowPose(5), flowPose(1), inT) }
         }
-        var z = 50 - Double(a)
-        if fadedIndex == i {
-            opacity *= fadeOpacity
-            // It fades back in at the tail while the card that held that slot
-            // is still sliding away — tuck it a hair behind so the two never
-            // double up into a ghost.
-            z -= 0.5
-        }
-        return FanPose(x: x, y: y, rot: rot, scale: scale, opacity: opacity,
-                       z: z, recede: Double(min(2, abs(rel))))
-    }
-
-    private func relative(_ i: Int, shift: CGFloat) -> CGFloat {
-        let n = max(items.count, 1)
-        var rel = (CGFloat(i - index) + shift).truncatingRemainder(dividingBy: CGFloat(n))
-        if rel < -CGFloat(n) / 2 { rel += CGFloat(n) }
-        if rel > CGFloat(n) / 2 { rel -= CGFloat(n) }
-        return rel
+        return flowPose(7)
     }
 
     private func cardStack(cardSize: CGSize) -> some View {
         ZStack(alignment: .top) {
-            ForEach(visibleIndices(), id: \.self) { i in
+            ForEach(flowIndices(), id: \.self) { i in
                 if i < items.count {
                     let pose = poseFor(i)
+                    // CSS perspective 900px ≈ SwiftUI perspective 1/900. The
+                    // small depth factor keeps the layering cue without
+                    // inflating the gap the user asked to keep tight.
+                    let depthScale = 1 + pose.depth / 3600
                     FanCardView(
                         item: items[i],
                         cardSize: cardSize,
@@ -5499,130 +5575,69 @@ struct LCFanHomeView: View {
                         onMore: { openMenu(items[i].app) },
                         onCover: { onRequestCover(items[i].app) }
                     )
-                    // Depth shading is now a flat, blur-free overlay OUTSIDE the
-                    // Equatable card. Interpolating it costs one alpha blend per
-                    // frame instead of re-rendering text + three shadows.
                     .overlay(
                         RoundedRectangle(cornerRadius: 34, style: .continuous)
                             .fill(FanTheme.deckShade
                                 .opacity(FanCardView.shadeOpacity(for: pose.recede)))
                     )
-                    .scaleEffect(pose.scale)
-                    .rotationEffect(.degrees(pose.rot), anchor: UnitPoint(x: 0.5, y: 1.4))
-                    .offset(x: pose.x, y: pose.y + 6)
+                    .scaleEffect(pose.scale * depthScale)
+                    .rotation3DEffect(.degrees(pose.yaw), axis: (x: 0, y: 1, z: 0),
+                                      anchor: .center, anchorZ: 0, perspective: 1 / 900)
+                    .rotation3DEffect(.degrees(pose.pitch), axis: (x: 1, y: 0, z: 0),
+                                      anchor: .center, anchorZ: 0, perspective: 1 / 900)
+                    .rotationEffect(.degrees(pose.rot))
+                    .offset(x: pose.x, y: 6)
                     .opacity(pose.opacity)
                     .zIndex(pose.z)
-                    .allowsHitTesting(pose.z >= 49.5)
-                    // PERF: no compositingGroup. It forced every card into an
-                    // offscreen render pass before compositing; zIndex already
-                    // orders the deck, so the extra pass bought nothing.
+                    .allowsHitTesting(pose.z >= 3)
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
-        // Simultaneous, not exclusive: the artwork's own long-press (LC's
-        // "choose a cover") must keep working while the deck reads drags.
         .simultaneousGesture(deckDrag)
     }
+
+    private var travel: CGFloat { deckWidth * 0.42 + 40 }
 
     private var deckDrag: some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { v in
                 guard !busy, items.count > 1 else { return }
-                dragging = true
-                dragW = v.translation.width
-                dragH = v.translation.height
+                flowDir = v.translation.width < 0 ? 1 : -1
+                phase = clamp01(abs(v.translation.width) / travel)
             }
             .onEnded { v in
                 guard !busy, items.count > 1 else {
-                    dragging = false
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                        dragW = 0
-                        dragH = 0
-                    }
+                    phase = 0
                     return
                 }
-                dragging = false
-                let threshold = max(64, deckWidth * 0.2)
-                let dx = v.translation.width
-                let predicted = v.predictedEndTranslation.width
-                if dx <= -threshold || (dx < -24 && predicted <= -threshold * 1.7) {
-                    deal(1)
-                } else if dx >= threshold || (dx > 24 && predicted >= threshold * 1.7) {
-                    deal(-1)
+                // Same commit rule as the approved web prototype:
+                // >22% travel or a flick faster than 550 pt/s commits,
+                // otherwise the deck springs back without moving a neighbour.
+                if phase > 0.22 || abs(v.velocity.width) > 550 {
+                    flowTo(1)
                 } else {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
-                        dragW = 0
-                        dragH = 0
-                    }
+                    flowTo(0)
                 }
             }
     }
 
-    // Deal one card. Phase 1 the card leaves under the finger, phase 2 the
-    // rest of the fan slides one slot and the dealt card fades back in at the
-    // tail — exactly the 290 / 520ms beat in the design.
-    private func deal(_ direction: Int) {
-        guard !busy, items.count > 1, flyIndex == nil else { return }
-        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+    private func flowTo(_ target: CGFloat) {
+        guard !busy else { return }
         busy = true
-        flyFrom = index
-        flyIndex = index
-        flyX = dragW
-        flyY = dragH * 0.22
-        flyRot = Double(dragW) * 0.045
-        flyScale = 1.01
-        flyOpacity = 1
-        dragW = 0
-        dragH = 0
-        let dir = CGFloat(direction)
-        // Drag left deals the card to the LEFT: the card keeps travelling the
-        // way the finger threw it (−560 for dir = 1), tipping counter-clockwise.
-        withAnimation(.timingCurve(0.28, 0.70, 0.30, 1.0, duration: 0.34)) {
-            flyX = -dir * 560
-            flyY = dir * 26
-            flyRot = -Double(dir) * 20
-            flyScale = 0.92
-            flyOpacity = 0
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
-            settleDeal(direction)
-        }
-    }
-
-    private func settleDeal(_ direction: Int) {
-        let n = items.count
-        guard n > 0 else {
-            busy = false
-            return
-        }
-        let old = flyFrom
-        var t = Transaction()
-        t.disablesAnimations = true
-        withTransaction(t) {
-            index = ((old + direction) % n + n) % n
-            // The deck slides the same way the card went: dragging left means
-            // the neighbour that was waiting on the RIGHT becomes the front
-            // card, so it starts one slot right and eases into place.
-            relShift = CGFloat(direction)
-            flyIndex = nil
-            flyX = 0
-            flyY = 0
-            flyRot = 0
-            flyScale = 1
-            flyOpacity = 1
-            fadedIndex = old
-            fadeOpacity = 0
-        }
-        withAnimation(.easeOut(duration: 0.5)) { relShift = 0 }
-        withAnimation(.easeOut(duration: 0.32)) { fadeOpacity = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            fadedIndex = nil
-            fadeOpacity = 1
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.62) {
-            busy = false
+        if target == 1 { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+        let remaining = abs(target - phase)
+        let dur = 0.52 * Double(max(0.12, remaining))
+        withAnimation(.easeOut(duration: dur)) { phase = target }
+        DispatchQueue.main.asyncAfter(deadline: .now() + dur + 0.02) {
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                if target == 1 { head = wrapped(head + flowDir) }
+                phase = 0
+                busy = false
+            }
         }
     }
 
@@ -5984,8 +5999,8 @@ struct LCFanHomeView: View {
             ))
         }
         items = out
-        if index >= out.count {
-            index = max(0, out.count - 1)
+        if head >= out.count {
+            head = max(0, out.count - 1)
         }
     }
 }
