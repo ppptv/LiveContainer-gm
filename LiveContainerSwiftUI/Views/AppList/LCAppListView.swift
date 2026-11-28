@@ -5275,7 +5275,7 @@ struct LCFanHomeView: View {
                         if items.isEmpty {
                             emptyState
                         } else if mode == 0 {
-                            cardStack(cardSize: cardSize)
+                            cardStack(cardSize: cardSize, deckWidth: geo.size.width)
                                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
                         } else {
                             listStack
@@ -5284,12 +5284,8 @@ struct LCFanHomeView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                // FIX v102: this VStack had no explicit width, so SwiftUI sized
-                // it from its widest child's intrinsic frame (inflated by the
-                // card's shadows + 3D transform) and centred that oversized
-                // stack in the screen — every child (title, dots, cards, dock)
-                // drifted right together. Pin it to the full geometry width.
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: geo.size.width, alignment: .center)
+                .frame(maxHeight: .infinity, alignment: .top)
                 .overlay(alignment: .bottom) {
                     dock.padding(.bottom, 8)
                 }
@@ -5300,6 +5296,31 @@ struct LCFanHomeView: View {
                     menuOverlay(app)
                 }
             }
+            // FIX v104 — THE ROOT CAUSE, reproduced and verified in a standalone
+            // SwiftUI probe on a real 402pt iPhone 16 Pro simulator:
+            //
+            //   probe WITHOUT this clamp : head-card centre 247.3pt (+46.3 off)
+            //   probe WITH    this clamp : head-card centre 200.8pt (-0.2 off)
+            //
+            // Why it drifts: the deck parks neighbours outside the screen on
+            // purpose — the right-hand card's frame ends at ~506pt on a 402pt
+            // display. SwiftUI honours a child's frame even off-screen, so the
+            // ancestor stack grows to ~506pt and everything inside is centred
+            // on that over-wide box: measured title +55pt, dock +49pt, head
+            // card +62pt — all shifted RIGHT by roughly (506−402)/2.
+            //
+            // Why the previous attempts failed: `.frame(maxWidth: .infinity)`
+            // still ACCEPTS an oversized proposal, and `.clipped()` alone only
+            // trims drawing while the child keeps reporting its full width
+            // upward. Only an explicit `width:` equal to the real screen width
+            // refuses the inflated proposal, so the overflowing cards can no
+            // longer widen this stack or its ancestors.
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+            .clipped()
+            // Keep the single width source in sync with the actual layout.
+            // Rotation and split-view resizes both land here.
+            .onAppear { deckWidth = geo.size.width }
+            .onChange(of: geo.size.width) { w in deckWidth = w }
         }
         .onAppear {
             topBeadHidden = false
@@ -5469,7 +5490,13 @@ struct LCFanHomeView: View {
 
     // MARK: Fan deck
 
-    private var deckWidth: CGFloat { UIScreen.main.bounds.width }
+    /// The ONE width every deck measurement derives from. It is written from
+    /// the layout's own GeometryReader, so side offsets, exit offsets, drag
+    /// travel and the deck canvas can never disagree with each other or with
+    /// the actual page width. `UIScreen.main.bounds.width` used to be the base
+    /// and it does not always match the width SwiftUI hands this page inside a
+    /// NavigationView — a small mismatch shifts every card off centre.
+    @State private var deckWidth: CGFloat = UIScreen.main.bounds.width
 
     private func wrapped(_ i: Int) -> Int {
         let n = max(items.count, 1)
@@ -5594,46 +5621,43 @@ struct LCFanHomeView: View {
         return flowPose(7)
     }
 
-    private func cardStack(cardSize: CGSize) -> some View {
-        GeometryReader { deckGeo in
-            ZStack {
-                ForEach(flowIndices(), id: \.self) { i in
-                    if i < items.count {
-                        let pose = poseFor(i)
-                        // FIX v102: place each card with an ABSOLUTE position
-                        // measured from the deck's own geometry centre. The
-                        // previous version relied on ZStack's implicit centre,
-                        // but a card wrapped in drawingGroup + three shadows +
-                        // a 3D rotation reports an inflated intrinsic frame, so
-                        // ZStack centred that inflated box and pushed the whole
-                        // stack off-axis. position(x:) ignores intrinsic size.
-                        FanCardView(
-                            item: items[i],
-                            cardSize: cardSize,
-                            onLaunch: { onLaunch(items[i].app) },
-                            onMore: { openMenu(items[i].app) },
-                            onCover: { onRequestCover(items[i].app) }
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                                .fill(FanTheme.deckShade
-                                    .opacity(FanCardView.shadeOpacity(for: pose.recede)))
-                        )
-                        .rotation3DEffect(.degrees(pose.yaw), axis: (x: 0, y: 1, z: 0),
-                                          anchor: .center, anchorZ: 0, perspective: 1 / 900)
-                        .scaleEffect(pose.scale)
-                        .opacity(pose.opacity)
-                        .zIndex(pose.z)
-                        .allowsHitTesting(pose.z >= 3)
-                        .position(x: deckGeo.size.width / 2 + pose.x,
-                                  y: cardSize.height / 2 + 6)
-                    }
+    private func cardStack(cardSize: CGSize, deckWidth width: CGFloat) -> some View {
+        // FIX v104: the deck is a canvas of EXACTLY the width SwiftUI gave this
+        // page, not `UIScreen.main.bounds.width`. On iPhone 16 Pro the screen
+        // is 402pt while a UIScreen lookup can disagree with the actual layout
+        // width inside a NavigationView, and any mismatch moves every pose.
+        let deckW = width
+        return ZStack {
+            ForEach(flowIndices(), id: \.self) { i in
+                if i < items.count {
+                    let pose = poseFor(i)
+                    FanCardView(
+                        item: items[i],
+                        cardSize: cardSize,
+                        onLaunch: { onLaunch(items[i].app) },
+                        onMore: { openMenu(items[i].app) },
+                        onCover: { onRequestCover(items[i].app) }
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 34, style: .continuous)
+                            .fill(FanTheme.deckShade
+                                .opacity(FanCardView.shadeOpacity(for: pose.recede)))
+                    )
+                    .rotation3DEffect(.degrees(pose.yaw), axis: (x: 0, y: 1, z: 0),
+                                      anchor: .center, anchorZ: 0, perspective: 1 / 900)
+                    .scaleEffect(pose.scale)
+                    .opacity(pose.opacity)
+                    .zIndex(pose.z)
+                    .allowsHitTesting(pose.z >= 3)
+                    // Centring origin is this canvas's own midpoint, so a card
+                    // at pose.x == 0 always lands dead centre.
+                    .position(x: deckW / 2 + pose.x, y: cardSize.height / 2 + 6)
                 }
             }
-            .frame(width: deckGeo.size.width, height: deckGeo.size.height)
-            .contentShape(Rectangle())
-            .simultaneousGesture(deckDrag)
         }
+        .frame(width: deckW, height: cardSize.height + 12, alignment: .top)
+        .contentShape(Rectangle())
+        .simultaneousGesture(deckDrag)
     }
 
     private var travel: CGFloat { deckWidth * 0.42 + 40 }
