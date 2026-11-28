@@ -5196,17 +5196,16 @@ private struct FanCardView: View, Equatable {
         // once and only its transform animates. Depth shading still cross-fades
         // continuously, but that now lives in the parent as a cheap alpha fill
         // (see cardStack) instead of inside this Equatable subtree.
+        // PERF: flatten the card FACE — text, gradients and rim — into ONE
+        // static texture, the same trick the iOS app switcher uses. The three
+        // shadows are added AFTER rasterisation on purpose: if they are inside
+        // the group, the radius-50 blur grows the bitmap by ~100pt on each
+        // side, which shifts the card's alignment centre and makes it render
+        // oversized and cropped. Keeping them outside preserves exact layout.
+        .drawingGroup(opaque: false, colorMode: .extendedLinear)
         .shadow(color: FanTheme.shadow.opacity(0.42), radius: 12, x: 0, y: 8)
         .shadow(color: FanTheme.shadow.opacity(0.20), radius: 50, x: 0, y: 36)
         .shadow(color: FanTheme.shadow.opacity(0.14), radius: 3, x: 0, y: 1.5)
-        // PERF: flatten the entire card — text, gradients, rim and all three
-        // shadows — into ONE static texture. This is the same trick the iOS app
-        // switcher uses: while the deck slides, Core Animation only moves a
-        // handful of bitmaps with a transform; it never re-lays-out text or
-        // re-rasterises a blur. Because FanCardView is Equatable and its content
-        // is constant during a drag/deal, this texture is rasterised once and
-        // reused for every frame of the gesture.
-        .drawingGroup(opaque: false, colorMode: .extendedLinear)
     }
 
     // Static hairline rim only. The old version also baked a recede-dependent
@@ -5410,8 +5409,14 @@ struct LCFanHomeView: View {
             Text("\(items.count) 个应用 · 左右拖动切换")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(FanTheme.muted)
+                .fixedSize(horizontal: true, vertical: false)
+            // Only show a bounded window of dots around the active card. The
+            // old version laid out every app's dot; with 19+ apps that row
+            // overflowed on narrow screens and stretched the parent ZStack,
+            // which moved the deck off-centre. Five dots are enough to convey
+            // position without depending on the installed app count.
             HStack(spacing: 5) {
-                ForEach(items.indices, id: \.self) { i in
+                ForEach(dotWindow, id: \.self) { i in
                     Capsule()
                         .fill(i == head ? FanTheme.pink : Color(red: 0.851, green: 0.855, blue: 0.890))
                         .frame(width: i == head ? 15 : 5, height: 5)
@@ -5422,6 +5427,19 @@ struct LCFanHomeView: View {
         }
         .frame(height: 26)
         .frame(maxWidth: .infinity)
+    }
+
+    /// Up to five app indices centred on the current card.
+    private var dotWindow: [Int] {
+        let n = items.count
+        guard n > 0 else { return [] }
+        let half = 2
+        var lo = head - half
+        var hi = head + half
+        if lo < 0 { hi -= lo; lo = 0 }
+        if hi >= n { lo -= (hi - n + 1); hi = n - 1 }
+        lo = max(0, lo)
+        return (lo...hi).map { $0 }
     }
 
     private var emptyState: some View {
@@ -5468,21 +5486,29 @@ struct LCFanHomeView: View {
 
     // 0 centre · 1 left · 2 right · 3 exit-left · 4 exit-right ·
     // 5 entry-left · 6 entry-right · 7 hidden
+    // All horizontal offsets are derived from the DEVICE WIDTH, not hard-coded
+    // points. The old fixed 138 / 340pt values were tuned for a 393pt screen;
+    // on a 320pt SE they pushed the side cards off-screen and on a 430pt Pro
+    // Max they floated too far apart. Fractions keep the same composition on
+    // every iPhone while the centre card always keeps its exact spec size.
+    private var sideX: CGFloat { deckWidth * 0.351 }      // ≈138pt @393pt
+    private var exitX: CGFloat { deckWidth * 0.865 }      // ≈340pt @393pt
+
     private func flowPose(_ kind: Int) -> FanPose {
         switch kind {
         case 0:
             return FanPose(x: 0, y: 0, rot: 0, scale: 1, opacity: 1, z: 3, recede: 0)
         case 1:
-            return FanPose(x: -138, y: 0, rot: 0, scale: 0.86, opacity: 1, z: 2,
+            return FanPose(x: -sideX, y: 0, rot: 0, scale: 0.86, opacity: 1, z: 2,
                            recede: 1, yaw: 55, depth: -70)
         case 2:
-            return FanPose(x: 138, y: 0, rot: 0, scale: 0.86, opacity: 1, z: 2,
+            return FanPose(x: sideX, y: 0, rot: 0, scale: 0.86, opacity: 1, z: 2,
                            recede: 1, yaw: -55, depth: -70)
         case 3, 5:
-            return FanPose(x: -340, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 1,
+            return FanPose(x: -exitX, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 1,
                            recede: 2, yaw: 82, depth: -140)
         case 4, 6:
-            return FanPose(x: 340, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 1,
+            return FanPose(x: exitX, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 1,
                            recede: 2, yaw: -82, depth: -140)
         default:
             return FanPose(x: 0, y: 0, rot: 0, scale: 0.70, opacity: 0, z: 0, recede: 2)
@@ -5564,10 +5590,14 @@ struct LCFanHomeView: View {
             ForEach(flowIndices(), id: \.self) { i in
                 if i < items.count {
                     let pose = poseFor(i)
-                    // CSS perspective 900px ≈ SwiftUI perspective 1/900. The
-                    // small depth factor keeps the layering cue without
-                    // inflating the gap the user asked to keep tight.
-                    let depthScale = 1 + pose.depth / 3600
+                    // FIX: transform order and scaling follow the design spec.
+                    // - Only pose.scale drives size. The old depthScale inflated
+                    //   the card from its 328pt spec and pushed it off-screen.
+                    // - A SINGLE yaw rotation with the default perspective keeps
+                    //   the card centred; two stacked 3D effects each applied
+                    //   their own perspective and drifted the anchor.
+                    // - zIndex (not translateZ) orders the deck, so the two
+                    //   cards can never intersect regardless of depth.
                     FanCardView(
                         item: items[i],
                         cardSize: cardSize,
@@ -5580,12 +5610,9 @@ struct LCFanHomeView: View {
                             .fill(FanTheme.deckShade
                                 .opacity(FanCardView.shadeOpacity(for: pose.recede)))
                     )
-                    .scaleEffect(pose.scale * depthScale)
                     .rotation3DEffect(.degrees(pose.yaw), axis: (x: 0, y: 1, z: 0),
                                       anchor: .center, anchorZ: 0, perspective: 1 / 900)
-                    .rotation3DEffect(.degrees(pose.pitch), axis: (x: 1, y: 0, z: 0),
-                                      anchor: .center, anchorZ: 0, perspective: 1 / 900)
-                    .rotationEffect(.degrees(pose.rot))
+                    .scaleEffect(pose.scale)
                     .offset(x: pose.x, y: 6)
                     .opacity(pose.opacity)
                     .zIndex(pose.z)
