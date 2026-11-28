@@ -5063,6 +5063,10 @@ private struct FanItem {
     var version: String
     var size: String
     var intro: String
+    /// Bumped whenever cover/meta/size data is rebuilt. FanCardView's Equatable
+    /// compares this so an updated cover invalidates the card, while a pose
+    /// change during a drag does not.
+    var generation: Int = 0
 }
 
 private struct FanPose {
@@ -5088,26 +5092,28 @@ private func fanBlend(_ color: Color, _ amount: CGFloat) -> Color {
                  blue: b + (1 - b) * amount)
 }
 
-private struct FanCardView: View {
+private struct FanCardView: View, Equatable {
     var item: FanItem
     var cardSize: CGSize
-    /// How many slots behind the front card this one sits (0…2), fractional
-    /// while the deck slides so shading and shadow can cross-fade.
-    var recede: Double = 0
     var onLaunch: () -> Void
     var onMore: () -> Void
     var onCover: () -> Void
+
+    // Equatable lets SwiftUI skip this subtree entirely while only a pose
+    // changes. During a drag or a deal the parent re-evaluates its body every
+    // frame; without Equatable it rebuilt all five full card bodies (text
+    // layout, gradients, buttons) at 60–120 Hz. Identity is the item id plus
+    // geometry — the closures are stable call sites and are ignored.
+    static func == (l: FanCardView, r: FanCardView) -> Bool {
+        l.item.id == r.item.id && l.item.generation == r.item.generation &&
+        l.cardSize == r.cardSize
+    }
 
     private var artH: CGFloat { cardSize.height * 400.0 / 604.0 }
     private var radius: CGFloat { 34 }
     // Everything inside the card scales with its width, so a short screen
     // shrinks the whole object instead of clipping the button row.
     private var sc: CGFloat { max(0.72, min(1, cardSize.width / 328)) }
-    /// 1 = front card, 0.5 = one slot back, 0 = two slots back.
-    private var lift: Double { max(0, 1 - recede / 2) }
-    // Cards behind are darkened rather than made transparent: a solid card in
-    // shade reads as depth, a half-transparent one just reads as washed out.
-    private var shade: Double { min(recede, 2) * 0.18 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -5176,33 +5182,38 @@ private struct FanCardView: View {
         .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         .overlay(shell)
-        // Three shadows on the front card: a dense rim shadow that actually
-        // lands on the cards behind, a broad ambient one that floats it off
-        // the page, and a hair of contact shadow at the bottom edge. All of
-        // them fade out as the card recedes, so a card sliding forward brightens
-        // continuously instead of popping.
-        .shadow(color: FanTheme.shadow.opacity(0.14 + 0.28 * lift),
-                radius: 12 + 2 * (1 - lift), x: 0, y: 8 + 2 * (1 - lift))
-        .shadow(color: FanTheme.shadow.opacity(0.20 * lift),
-                radius: 50, x: 0, y: 36)
-        .shadow(color: FanTheme.shadow.opacity(0.14 * lift),
-                radius: 3, x: 0, y: 1.5)
+        // PERF: shadow parameters are CONSTANTS now. Previously opacity/radius/
+        // offset were interpolated from `recede`, which changed on every frame
+        // of the 0.5 s settle — Core Animation had to re-rasterise three blurs
+        // (one of them radius 50) on five cards every frame, the main source of
+        // the stutter and heat. With fixed values each card's shadow rasterises
+        // once and only its transform animates. Depth shading still cross-fades
+        // continuously, but that now lives in the parent as a cheap alpha fill
+        // (see cardStack) instead of inside this Equatable subtree.
+        .shadow(color: FanTheme.shadow.opacity(0.42), radius: 12, x: 0, y: 8)
+        .shadow(color: FanTheme.shadow.opacity(0.20), radius: 50, x: 0, y: 36)
+        .shadow(color: FanTheme.shadow.opacity(0.14), radius: 3, x: 0, y: 1.5)
     }
 
-    // Dimming for the cards behind + a hair of top light on the edge, so the
-    // front card reads as a raised surface even where no shadow can fall.
+    // Static hairline rim only. The old version also baked a recede-dependent
+    // dimming fill + gradient here; both forced a full body rebuild per frame.
+    // The dimming is now a separate overlay in the parent (solid colour, no
+    // blur, no layout), which is orders of magnitude cheaper to interpolate.
     private var shell: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(FanTheme.deckShade.opacity(shade))
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(colors: [.white.opacity(0.35 + 0.60 * lift),
-                                            .white.opacity(0.04 + 0.18 * lift),
-                                            .black.opacity(0.12 - 0.05 * lift)],
-                                   startPoint: .top, endPoint: .bottom),
-                    lineWidth: 1)
-        }
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(
+                LinearGradient(colors: [.white.opacity(0.60),
+                                        .white.opacity(0.10),
+                                        .black.opacity(0.10)],
+                               startPoint: .top, endPoint: .bottom),
+                lineWidth: 1)
+    }
+
+    // Flat depth shading, applied by the parent as a sibling overlay so it can
+    // animate without invalidating this view. A solid fill has no blur and no
+    // text layout, so cross-fading it is nearly free on the GPU.
+    static func shadeOpacity(for recede: Double) -> Double {
+        min(max(recede, 0), 2) * 0.18
     }
 }
 
@@ -5476,10 +5487,17 @@ struct LCFanHomeView: View {
                     FanCardView(
                         item: items[i],
                         cardSize: cardSize,
-                        recede: pose.recede,
                         onLaunch: { onLaunch(items[i].app) },
                         onMore: { openMenu(items[i].app) },
                         onCover: { onRequestCover(items[i].app) }
+                    )
+                    // Depth shading is now a flat, blur-free overlay OUTSIDE the
+                    // Equatable card. Interpolating it costs one alpha blend per
+                    // frame instead of re-rendering text + three shadows.
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 34, style: .continuous)
+                            .fill(FanTheme.deckShade
+                                .opacity(FanCardView.shadeOpacity(for: pose.recede)))
                     )
                     .scaleEffect(pose.scale)
                     .rotationEffect(.degrees(pose.rot), anchor: UnitPoint(x: 0.5, y: 1.4))
@@ -5487,7 +5505,9 @@ struct LCFanHomeView: View {
                     .opacity(pose.opacity)
                     .zIndex(pose.z)
                     .allowsHitTesting(pose.z >= 49.5)
-                    .compositingGroup()
+                    // PERF: no compositingGroup. It forced every card into an
+                    // offscreen render pass before compositing; zIndex already
+                    // orders the deck, so the extra pass bought nothing.
                 }
             }
         }
@@ -5951,7 +5971,8 @@ struct LCFanHomeView: View {
                 genre: meta.genre ?? "应用",
                 version: app.version,
                 size: LCGallerySizeStore.shared.sizeText(for: app),
-                intro: meta.intro.isEmpty ? "长按封面可更换自定义封面。" : meta.intro
+                intro: meta.intro.isEmpty ? "长按封面可更换自定义封面。" : meta.intro,
+                generation: revision
             ))
         }
         items = out
