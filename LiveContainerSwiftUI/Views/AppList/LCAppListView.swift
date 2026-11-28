@@ -225,15 +225,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             // Sliding the bead away must not leave a hole: off
                             // the bar it can float, so it leaves with the bar
                             // instead of fading into reserved space.
-                            .overlay(alignment: .bottomTrailing) {
-                                // Portrait only. In landscape the showcase is
-                                // the whole screen — the bead floats over the
-                                // first poster and there is nothing to scroll
-                                // it away with, so it simply isn't there.
-                                if verticalSizeClass != .compact {
-                                    installBeadMenu
-                                }
-                            }
                         }
                         }
                         .navigationViewStyle(StackNavigationViewStyle())
@@ -3745,10 +3736,13 @@ struct LCHomeGalleryView: View {
 
     var body: some View {
         ZStack {
-            // Ambient page colour: the current poster itself, heavily blurred,
-            // so the whole app carries the game's palette instead of a fixed
-            // navy gradient that never matched the hero above it.
-            galleryBackdrop
+            // Ambient page colour: the current poster itself, heavily blurred.
+            // Portrait paints its own paper white now, so the blurred backdrop
+            // is only built for the landscape showcase — one less full-screen
+            // blur to composite behind an opaque page.
+            if verticalSizeClass == .compact {
+                galleryBackdrop
+            }
 
             ZStack {
                 if verticalSizeClass == .compact {
@@ -3851,88 +3845,28 @@ struct LCHomeGalleryView: View {
     // one that was laid out for the other orientation. Mutating it left the
     // grid with stale geometry after rotating back — the list showed up empty.
     private var portraitPage: some View {
-        ZStack(alignment: .top) {
-            // The poster is pinned to the top edge now: it does not travel with
-            // the page any more. Only the list moves, and scrolling up slides
-            // the list over the poster while the poster loses focus behind it.
-            pinnedHero
-
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    // The poster's own footprint. Empty, so it needs an explicit
-                    // hit shape; that is also where the replace-cover long
-                    // press lives now that the artwork no longer has a view of
-                    // its own in the hierarchy here.
-                    Color.clear
-                        .frame(height: heroHeight)
-                        .contentShape(Rectangle())
-                        .onLongPressGesture(minimumDuration: 0.55) { requestCustomCover() }
-
-                    VStack(alignment: .leading, spacing: 0) {
-                        iconRail
-                        cardsSection
-                        hiddenSection
-                        // Clearance for the home indicator AND for the bead, which
-                        // floats in the bottom-right corner.
-                        Spacer(minLength: 96)
-                    }
-                    .padding(.horizontal, sideMargin)
-                    // From here down the list is a surface of its own: it ramps
-                    // in over 56pt so the moving edge is never a hard seam, then
-                    // stays solid. That is what makes scrolling read as the list
-                    // covering the poster, instead of the poster sliding out
-                    // from underneath a transparent list.
-                    .background(alignment: .top) { listSurface }
-                }
-            }
-            .ignoresSafeArea(edges: .top)
-            // Portrait stays night-side no matter what the system is set to.
-            // The page is built on artwork, not on system surfaces: everything
-            // from the caps to the frosted run pill is tuned against a dark
-            // card, and in light mode those materials flipped to white slabs
-            // sitting on a dark poster. Pinning the scheme here keeps every card
-            // the same fixed dark object in both settings; landscape
-            // deliberately does not inherit this (see galleryBackdrop).
-            .environment(\.colorScheme, .dark)
-            .simultaneousGesture(heroGesture)
-            // The old PreferenceKey reader never fired, which is why neither the
-            // pull-down fill nor the collapsing dock ever moved. ScrollGeometry
-            // is the supported way to observe this.
-            .onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y + geo.contentInsets.top
-            } action: { _, y in
-                let pull = max(0, -y)
-                if abs(pull - pullDown) > 0.5 {
-                    pullDown = min(pull, 340)
-                }
-                // How far the list has covered the poster. Fully receded once
-                // the list has travelled 85% of the poster's height, so the
-                // poster is gone by the time the first row reaches the top.
-                let fade = min(max(y / max(1, heroHeight * 0.85), 0), 1)
-                if abs(fade - heroFade) > 0.004 {
-                    heroFade = fade
-                }
-                // Plus bead follows the reading direction: it tucks away once
-                // the list is pulled upwards (content moving up, offset growing)
-                // and returns as soon as the finger reverses. 6pt of hysteresis
-                // keeps jitter from flickering it.
-                let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
-                lastScrollY = y
-                if y <= 6 {
-                    if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
-                } else if delta > 6 {
-                    if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
-                } else if delta < -6 {
-                    if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
-                }
-            }
-
-            // Name and run button live ABOVE the list, not on the poster, so
-            // they stay tappable while the poster is uncovered — the scroll
-            // view would otherwise swallow every tap meant for them. They fade
-            // out earlier than the artwork does.
-            heroCaption
-        }
+        LCFanHomeView(
+            apps: visibleApps,
+            sideStoreIcon: sideStoreIcon,
+            sortType: sortType,
+            canInstall: canInstall,
+            isInstalling: isInstalling,
+            revision: coverTick &+ sizeTick &+ metaTick,
+            onLaunch: onLaunch,
+            onOpenSettings: onOpenSettings,
+            onUninstall: onUninstall,
+            onSortChange: onSortChange,
+            onCustomSort: onCustomSort,
+            onInstallIPA: onInstallIPA,
+            onInstallURL: onInstallURL,
+            onOpenLink: onOpenLink,
+            onOpenSideStore: onOpenSideStoreOrHelp,
+            onRequestCover: { app in
+                coverTarget = app
+                coverMenuShown = true
+            },
+            topBeadHidden: $topBeadHidden
+        )
     }
 
     // MARK: Pinned poster (portrait)
@@ -5087,6 +5021,902 @@ struct LCHomeGalleryView: View {
         let n = slideCount
         guard n > 0 else { return }
         current = ((i % n) + n) % n
+    }
+}
+
+// MARK: - Fan-deck home (gallery v2 design)
+//
+// Straight port of `QuickBar/design/LC扇卡首页-交互设计稿-v2.html`. Every
+// number below is taken from that file, in points, so the shipped screen and
+// the mock are the same object:
+//
+//   card 328 x 604, radius 34, art 400, transform origin 50% / 140%
+//   fan   16pt sideways, -2pt up, 12.5 deg, -5% scale, -13% opacity per slot
+//   drag  follow x, y * 0.22, rotate dx * 0.045, scale 1.01
+//   deal  x = +/-560, y = +/-26, rotate -/+20 deg, scale .92, 340ms
+//   then  the deck slides one slot in 500ms and the dealt card fades back in
+//
+// The deck never renders more than five cards, so a library of fifty apps
+// still draws five images per frame — that is what keeps the drag at 120Hz
+// instead of stuttering on SwiftUI layout.
+
+private enum FanTheme {
+    static let page = Color(red: 0.945, green: 0.949, blue: 0.965)
+    static let ink = Color(red: 0.137, green: 0.137, blue: 0.169)
+    static let muted = Color(red: 0.608, green: 0.608, blue: 0.667)
+    static let desc = Color(red: 0.553, green: 0.553, blue: 0.600)
+    static let pink = Color(red: 0.937, green: 0.545, blue: 0.608)
+    static let pinkSoft = Color(red: 0.992, green: 0.894, blue: 0.910)
+    static let row = Color(red: 0.969, green: 0.969, blue: 0.980)
+    static let chip = Color(red: 0.941, green: 0.945, blue: 0.961)
+    static let shadow = Color(red: 0.149, green: 0.125, blue: 0.204)
+    static let coverShadow = Color(red: 0.235, green: 0.157, blue: 0.196)
+}
+
+private struct FanItem {
+    var id: String
+    var app: LCAppModel
+    var cover: UIImage
+    var accent: Color
+    var genre: String
+    var version: String
+    var size: String
+    var intro: String
+}
+
+private struct FanPose {
+    var x: CGFloat
+    var y: CGFloat
+    var rot: Double
+    var scale: CGFloat
+    var opacity: Double
+    var z: Double
+}
+
+// CMYK-free white mix, the same `mixWhite()` the design uses to tint the
+// launch pill from the artwork's own accent.
+private func fanBlend(_ color: Color, _ amount: CGFloat) -> Color {
+    let ui = UIColor(color)
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return color }
+    return Color(red: r + (1 - r) * amount,
+                 green: g + (1 - g) * amount,
+                 blue: b + (1 - b) * amount)
+}
+
+private struct FanCardView: View {
+    var item: FanItem
+    var cardSize: CGSize
+    var elevation: Int = 2
+    var onLaunch: () -> Void
+    var onMore: () -> Void
+    var onFolder: () -> Void
+    var onMultitask: () -> Void
+    var onCover: () -> Void
+
+    private var artH: CGFloat { cardSize.height * 400.0 / 604.0 }
+    private var radius: CGFloat { 34 }
+    // Everything inside the card scales with its width, so a short screen
+    // shrinks the whole object instead of clipping the button row.
+    private var sc: CGFloat { max(0.72, min(1, cardSize.width / 328)) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack(alignment: .top) {
+                Image(uiImage: item.cover)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: cardSize.width, height: artH)
+                    .clipped()
+                    .overlay(
+                        LinearGradient(colors: [.black.opacity(0.10), .clear],
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: artH * 0.32),
+                        alignment: .top
+                    )
+                HStack(spacing: 0) {
+                    chipButton("folder", label: "数据文件夹", action: onFolder)
+                    Spacer(minLength: 0)
+                    chipButton("square.on.square", label: "多任务", action: onMultitask)
+                }
+                .padding(.horizontal, 16 * sc)
+                .padding(.top, 16 * sc)
+            }
+            .frame(width: cardSize.width, height: artH)
+            .contentShape(Rectangle())
+            // Long-press the artwork only: this is LC's own "choose a cover",
+            // and it must never be taken over by the app menu any more.
+            .onLongPressGesture(minimumDuration: 0.48, maximumDistance: 10) { onCover() }
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(item.app.displayName)
+                    .font(.system(size: 22 * sc, weight: .heavy))
+                    .foregroundStyle(FanTheme.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("\(item.genre) · \(item.version) · \(item.size)")
+                    .font(.system(size: 11.5 * sc, weight: .semibold))
+                    .foregroundStyle(FanTheme.muted)
+                    .lineLimit(1)
+                    .padding(.top, 4 * sc)
+                Text(item.intro)
+                    .font(.system(size: 12.5 * sc))
+                    .foregroundStyle(FanTheme.desc)
+                    .lineSpacing(3 * sc)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 12 * sc)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 6 * sc)
+                HStack(spacing: 12 * sc) {
+                    Button(action: onLaunch) {
+                        Text("启动")
+                            .font(.system(size: 15 * sc, weight: .heavy))
+                            .foregroundStyle(item.accent)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54 * sc)
+                            .background(fanBlend(item.accent, 0.86), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    Button(action: onMore) {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 20 * sc, weight: .bold))
+                            .foregroundStyle(Color(red: 0.557, green: 0.561, blue: 0.616))
+                            .frame(width: 54 * sc, height: 54 * sc)
+                            .background(FanTheme.chip, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("更多")
+                }
+            }
+            .padding(EdgeInsets(top: 20 * sc, leading: 24 * sc,
+                                bottom: 22 * sc, trailing: 24 * sc))
+        }
+        .frame(width: cardSize.width, height: cardSize.height)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.035), lineWidth: 1)
+        )
+        .shadow(color: FanTheme.shadow.opacity(elevation == 0 ? 0.10 : 0.16),
+                radius: elevation == 0 ? 12 : 21, x: 0, y: elevation == 0 ? 10 : 18)
+        .shadow(color: FanTheme.shadow.opacity(elevation == 2 ? 0.06 : 0),
+                radius: 1.5, x: 0, y: 1)
+    }
+
+    private func chipButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 17 * sc, weight: .semibold))
+                .foregroundStyle(Color(red: 0.302, green: 0.302, blue: 0.349))
+                .frame(width: 40 * sc, height: 40 * sc)
+                .background(Color.white.opacity(0.94), in: Circle())
+                .shadow(color: FanTheme.coverShadow.opacity(0.18), radius: 8, x: 0, y: 5)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+}
+
+struct LCFanHomeView: View {
+    var apps: [LCAppModel]
+    var sideStoreIcon: UIImage?
+    var sortType: AppSortType
+    var canInstall: Bool
+    var isInstalling: Bool
+    var revision: Int
+    var onLaunch: (LCAppModel) -> Void
+    var onOpenSettings: (LCAppModel) -> Void
+    var onUninstall: (LCAppModel) -> Void
+    var onSortChange: (AppSortType) -> Void
+    var onCustomSort: () -> Void
+    var onInstallIPA: () -> Void
+    var onInstallURL: () -> Void
+    var onOpenLink: () -> Void
+    var onOpenSideStore: () -> Void
+    var onRequestCover: (LCAppModel) -> Void
+    @Binding var topBeadHidden: Bool
+
+    @State private var items: [FanItem] = []
+    @State private var index = 0
+    @State private var relShift: CGFloat = 0
+    @State private var dragW: CGFloat = 0
+    @State private var dragH: CGFloat = 0
+    @State private var dragging = false
+    @State private var flyIndex: Int? = nil
+    @State private var flyFrom = 0
+    @State private var flyX: CGFloat = 0
+    @State private var flyY: CGFloat = 0
+    @State private var flyRot: Double = 0
+    @State private var flyScale: CGFloat = 1
+    @State private var flyOpacity: Double = 1
+    @State private var fadedIndex: Int? = nil
+    @State private var fadeOpacity: Double = 1
+    @State private var busy = false
+    @State private var mode = 0                 // 0 = fan cards, 1 = list
+    @State private var sortShown = false
+    @State private var menuApp: LCAppModel? = nil
+
+    var body: some View {
+        GeometryReader { geo in
+            let cardSize = fanCardSize(in: geo.size)
+            ZStack {
+                FanTheme.page.ignoresSafeArea()
+                VStack(spacing: 0) {
+                    topBar
+                    if mode == 0 {
+                        hintRow
+                    }
+                    ZStack {
+                        if items.isEmpty {
+                            emptyState
+                        } else if mode == 0 {
+                            cardStack(cardSize: cardSize)
+                                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                        } else {
+                            listStack
+                                .transition(.opacity.combined(with: .offset(y: 10)))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .overlay(alignment: .bottom) {
+                    dock.padding(.bottom, 8)
+                }
+                if sortShown {
+                    sortPopover
+                }
+                if let app = menuApp {
+                    menuOverlay(app)
+                }
+            }
+        }
+        .onAppear {
+            topBeadHidden = false
+            rebuild()
+        }
+        .onChange(of: revision) { _ in rebuild() }
+        .onChange(of: apps.count) { _ in rebuild() }
+        .onChange(of: mode) { _ in
+            sortShown = false
+            dragW = 0
+            dragH = 0
+            dragging = false
+        }
+    }
+
+    // MARK: Sizing
+
+    // Width drives height (328:604). A short screen caps the height first and
+    // the width follows, so the card is never squashed.
+    private func fanCardSize(in size: CGSize) -> CGSize {
+        let maxW = min(328, max(220, size.width - 44))
+        var w = maxW
+        var h = w * 604.0 / 328.0
+        let available = size.height - 56 - 26 - 96
+        if h > available && available > 260 {
+            h = available
+            w = h * 328.0 / 604.0
+        }
+        return CGSize(width: w, height: h)
+    }
+
+    // MARK: Top bar
+
+    private var topBar: some View {
+        HStack(spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.88)) {
+                    sortShown.toggle()
+                }
+            } label: {
+                Image(systemName: "square.grid.2x2.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(FanTheme.pink)
+                    .frame(width: 40, height: 40)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .shadow(color: FanTheme.shadow.opacity(0.10), radius: 8, x: 0, y: 5)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("排序")
+
+            Spacer(minLength: 0)
+
+            Button(action: onOpenSideStore) {
+                ZStack {
+                    if let icon = sideStoreIcon {
+                        Image(uiImage: icon)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "square.grid.2x2.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .frame(width: 36, height: 36)
+                .clipShape(Circle())
+                .background(
+                    Circle().fill(
+                        LinearGradient(colors: [Color(red: 0.737, green: 0.831, blue: 0.980),
+                                                Color(red: 0.588, green: 0.722, blue: 0.937)],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing)
+                    )
+                )
+                .clipShape(Circle())
+                .shadow(color: Color(red: 0.314, green: 0.471, blue: 0.784).opacity(0.28),
+                        radius: 8, x: 0, y: 5)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("打开 SideStore")
+        }
+        .padding(.horizontal, 22)
+        .frame(height: 56)
+        .overlay(
+            Text(mode == 0 ? "应用图书馆" : "我的应用")
+                .font(.system(size: 17, weight: .heavy))
+                .foregroundStyle(FanTheme.ink)
+        )
+    }
+
+    private var hintRow: some View {
+        HStack(spacing: 12) {
+            Text("\(items.count) 个应用 · 左右拖动切换")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(FanTheme.muted)
+            HStack(spacing: 5) {
+                ForEach(items.indices, id: \.self) { i in
+                    Capsule()
+                        .fill(i == index ? FanTheme.pink : Color(red: 0.851, green: 0.855, blue: 0.890))
+                        .frame(width: i == index ? 15 : 5, height: 5)
+                        .animation(.easeOut(duration: 0.28), value: index)
+                }
+            }
+            .frame(height: 5)
+        }
+        .frame(height: 26)
+        .frame(maxWidth: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "square.stack.3d.up.slash")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(FanTheme.pink.opacity(0.75))
+            Text("还没有应用")
+                .font(.system(size: 15, weight: .heavy))
+                .foregroundStyle(FanTheme.ink)
+            Text("点下面的加号，从 IPA 或 URL 安装")
+                .font(.system(size: 12))
+                .foregroundStyle(FanTheme.muted)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, 60)
+    }
+
+    // MARK: Fan deck
+
+    private var deckWidth: CGFloat { UIScreen.main.bounds.width }
+
+    private func visibleIndices() -> [Int] {
+        let n = items.count
+        guard n > 0 else { return [] }
+        let span = min(5, n)
+        let half = span / 2
+        var out: [Int] = []
+        var seen = Set<Int>()
+        out.reserveCapacity(span)
+        for k in -half...half {
+            let i = ((index + k) % n + n) % n
+            if seen.insert(i).inserted { out.append(i) }
+        }
+        return out
+    }
+
+    private func poseFor(_ i: Int) -> FanPose {
+        let n = max(items.count, 1)
+        var rel = (CGFloat(i - index) + relShift).truncatingRemainder(dividingBy: CGFloat(n))
+        if rel < -CGFloat(n) / 2 { rel += CGFloat(n) }
+        if rel > CGFloat(n) / 2 { rel -= CGFloat(n) }
+
+        if flyIndex == i {
+            return FanPose(x: flyX, y: flyY, rot: flyRot,
+                           scale: flyScale, opacity: flyOpacity, z: 60)
+        }
+
+        let c = max(-2, min(2, rel))
+        let a = abs(c)
+        var x = c * 16
+        var y = -a * 2
+        var rot = Double(c) * 12.5
+        var scale = 1 - a * 0.05
+        var opacity = Double(abs(rel) > 2 ? 0 : 1 - a * 0.13)
+
+        if i == index && abs(rel) < 0.001 && (dragW != 0 || dragH != 0) {
+            x += dragW
+            y += dragH * 0.22
+            rot += Double(dragW) * 0.045
+            scale = 1.01
+            opacity = 1
+        }
+        if fadedIndex == i { opacity *= fadeOpacity }
+        return FanPose(x: x, y: y, rot: rot, scale: scale, opacity: opacity, z: 50 - Double(a))
+    }
+
+    private func cardStack(cardSize: CGSize) -> some View {
+        ZStack(alignment: .top) {
+            ForEach(visibleIndices(), id: \.self) { i in
+                if i < items.count {
+                    let pose = poseFor(i)
+                    let slot = max(0, min(2, Int((50 - pose.z).rounded())))
+                    FanCardView(
+                        item: items[i],
+                        cardSize: cardSize,
+                        elevation: 2 - slot,
+                        onLaunch: { onLaunch(items[i].app) },
+                        onMore: { openMenu(items[i].app) },
+                        onFolder: { openFolder(items[i].app) },
+                        onMultitask: { runMultitask(items[i].app) },
+                        onCover: { onRequestCover(items[i].app) }
+                    )
+                    .scaleEffect(pose.scale)
+                    .rotationEffect(.degrees(pose.rot), anchor: UnitPoint(x: 0.5, y: 1.4))
+                    .offset(x: pose.x, y: pose.y + 6)
+                    .opacity(pose.opacity)
+                    .zIndex(pose.z)
+                    .allowsHitTesting(pose.z >= 49.5)
+                    .compositingGroup()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .contentShape(Rectangle())
+        // Simultaneous, not exclusive: the artwork's own long-press (LC's
+        // "choose a cover") must keep working while the deck reads drags.
+        .simultaneousGesture(deckDrag)
+    }
+
+    private var deckDrag: some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { v in
+                guard !busy, items.count > 1 else { return }
+                dragging = true
+                dragW = v.translation.width
+                dragH = v.translation.height
+            }
+            .onEnded { v in
+                guard !busy, items.count > 1 else {
+                    dragging = false
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                        dragW = 0
+                        dragH = 0
+                    }
+                    return
+                }
+                dragging = false
+                let threshold = max(64, deckWidth * 0.2)
+                let dx = v.translation.width
+                let predicted = v.predictedEndTranslation.width
+                if dx <= -threshold || (dx < -24 && predicted <= -threshold * 1.7) {
+                    deal(1)
+                } else if dx >= threshold || (dx > 24 && predicted >= threshold * 1.7) {
+                    deal(-1)
+                } else {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
+                        dragW = 0
+                        dragH = 0
+                    }
+                }
+            }
+    }
+
+    // Deal one card. Phase 1 the card leaves under the finger, phase 2 the
+    // rest of the fan slides one slot and the dealt card fades back in at the
+    // tail — exactly the 290 / 520ms beat in the design.
+    private func deal(_ direction: Int) {
+        guard !busy, items.count > 1, flyIndex == nil else { return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+        busy = true
+        flyFrom = index
+        flyIndex = index
+        flyX = dragW
+        flyY = dragH * 0.22
+        flyRot = Double(dragW) * 0.045
+        flyScale = 1.01
+        flyOpacity = 1
+        dragW = 0
+        dragH = 0
+        let dir = CGFloat(direction)
+        withAnimation(.timingCurve(0.28, 0.70, 0.30, 1.0, duration: 0.34)) {
+            flyX = dir * 560
+            flyY = dir * 26
+            flyRot = -Double(dir) * 20
+            flyScale = 0.92
+            flyOpacity = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
+            settleDeal(direction)
+        }
+    }
+
+    private func settleDeal(_ direction: Int) {
+        let n = items.count
+        guard n > 0 else {
+            busy = false
+            return
+        }
+        let old = flyFrom
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            index = ((old + direction) % n + n) % n
+            relShift = -CGFloat(direction)
+            flyIndex = nil
+            flyX = 0
+            flyY = 0
+            flyRot = 0
+            flyScale = 1
+            flyOpacity = 1
+            fadedIndex = old
+            fadeOpacity = 0
+        }
+        withAnimation(.easeOut(duration: 0.5)) { relShift = 0 }
+        withAnimation(.easeOut(duration: 0.32)) { fadeOpacity = 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
+            fadedIndex = nil
+            fadeOpacity = 1
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.62) {
+            busy = false
+        }
+    }
+
+    // MARK: List
+
+    private var listStack: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 12) {
+                ForEach(items, id: \.id) { item in
+                    listRow(item)
+                }
+                Color.clear.frame(height: 92)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 4)
+        }
+    }
+
+    private func listRow(_ item: FanItem) -> some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Image(uiImage: item.cover)
+                    .resizable()
+                    .scaledToFill()
+            }
+            .frame(width: 64, height: 64)
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .shadow(color: FanTheme.shadow.opacity(0.16), radius: 9, x: 0, y: 6)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(item.app.displayName)
+                    .font(.system(size: 14.5, weight: .heavy))
+                    .foregroundStyle(FanTheme.ink)
+                    .lineLimit(1)
+                Text("\(item.genre) · \(item.version)")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(FanTheme.muted)
+                    .lineLimit(1)
+                    .padding(.top, 2)
+                Text(item.size)
+                    .font(.system(size: 17, weight: .heavy))
+                    .foregroundStyle(FanTheme.ink)
+                    .padding(.top, 6)
+            }
+            Spacer(minLength: 0)
+
+            Button { onLaunch(item.app) } label: {
+                Text("启动")
+                    .font(.system(size: 12.5, weight: .heavy))
+                    .foregroundStyle(FanTheme.pink)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 9)
+                    .background(Color.white, in: Capsule())
+                    .shadow(color: FanTheme.shadow.opacity(0.12), radius: 6, x: 0, y: 4)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(EdgeInsets(top: 11, leading: 12, bottom: 11, trailing: 12))
+        .frame(minHeight: 90)
+        .background(FanTheme.row, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .contentShape(Rectangle())
+        .onLongPressGesture(minimumDuration: 0.48, maximumDistance: 12) {
+            openMenu(item.app)
+        }
+    }
+
+    // MARK: Dock
+
+    private var dock: some View {
+        HStack(spacing: 10) {
+            dockButton("square.grid.2x2.fill", selected: mode == 0, label: "卡片视图") {
+                switchMode(0)
+            }
+            plusButton
+            dockButton("list.bullet", selected: mode == 1, label: "列表视图") {
+                switchMode(1)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(width: 212, height: 64)
+        .background {
+            // Opaque white, not a material: this page is paper white in every
+            // appearance, and ultraThinMaterial turned the pill grey the moment
+            // the system switched to dark mode.
+            ZStack {
+                Capsule().fill(.ultraThinMaterial)
+                Capsule().fill(Color.white.opacity(0.92))
+            }
+        }
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.7), lineWidth: 1))
+        .shadow(color: FanTheme.shadow.opacity(0.16), radius: 17, x: 0, y: 12)
+    }
+
+    private func dockButton(_ symbol: String, selected: Bool, label: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(selected ? FanTheme.pink : Color(red: 0.659, green: 0.663, blue: 0.706))
+                .frame(width: 46, height: 46)
+                .background(
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .fill(selected ? FanTheme.pinkSoft : Color.clear)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private var plusButton: some View {
+        Menu {
+            if canInstall {
+                Button { onInstallIPA() } label: {
+                    Label("从 IPA 安装", systemImage: "doc.badge.plus")
+                }
+                Button { onInstallURL() } label: {
+                    Label("从 URL 安装", systemImage: "link.badge.plus")
+                }
+                Button { onOpenLink() } label: {
+                    Label("打开链接", systemImage: "safari")
+                }
+            } else {
+                Button { } label: { Text("暂时无法安装") }
+                    .disabled(true)
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 22, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(
+                    LinearGradient(colors: [Color(red: 0.976, green: 0.718, blue: 0.757),
+                                            Color(red: 0.933, green: 0.525, blue: 0.596)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    in: Circle()
+                )
+                .shadow(color: Color(red: 0.933, green: 0.525, blue: 0.596).opacity(0.42),
+                        radius: 11, x: 0, y: 8)
+                .overlay {
+                    if isInstalling {
+                        ProgressView().tint(.white)
+                    }
+                }
+        }
+        .accessibilityLabel("安装应用")
+    }
+
+    private func switchMode(_ target: Int) {
+        guard mode != target else { return }
+        withAnimation(.easeOut(duration: 0.32)) { mode = target }
+    }
+
+    // MARK: Sort popover
+
+    private var sortOptions: [(AppSortType, String)] {
+        [(.defaultOrder, "默认顺序"),
+         (.alphabetical, "名称 A–Z"),
+         (.installationDate, "最近安装"),
+         (.lastLaunched, "最近启动"),
+         (.custom, "自定义排序")]
+    }
+
+    private var sortPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("排序方式")
+                .font(.system(size: 10.5, weight: .heavy))
+                .tracking(1.4)
+                .foregroundStyle(FanTheme.muted)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+            ForEach(sortOptions.indices, id: \.self) { oi in
+                let option = sortOptions[oi]
+                Button {
+                    if option.0 == .custom { onCustomSort() } else { onSortChange(option.0) }
+                    withAnimation(.easeOut(duration: 0.18)) { sortShown = false }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(option.1)
+                            .font(.system(size: 13, weight: sortType == option.0 ? .heavy : .semibold))
+                        Spacer(minLength: 0)
+                        if sortType == option.0 {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .heavy))
+                        }
+                    }
+                    .foregroundStyle(sortType == option.0 ? FanTheme.pink : FanTheme.ink)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+        .frame(width: 216)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.05), lineWidth: 1)
+        )
+        .shadow(color: FanTheme.shadow.opacity(0.22), radius: 24, x: 0, y: 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.leading, 22)
+        .padding(.top, 60)
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
+        .zIndex(80)
+    }
+
+    // MARK: App menu
+
+    private func openMenu(_ app: LCAppModel) {
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+            menuApp = app
+        }
+    }
+
+    private func closeMenu() {
+        withAnimation(.easeOut(duration: 0.22)) { menuApp = nil }
+    }
+
+    private func menuOverlay(_ app: LCAppModel) -> some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.32)
+                .ignoresSafeArea()
+                .onTapGesture { closeMenu() }
+            menuSheet(app)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 14)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+        .zIndex(90)
+    }
+
+    private func menuSheet(_ app: LCAppModel) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: false))
+                        .resizable()
+                        .scaledToFill()
+                }
+                .frame(width: 38, height: 38)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(app.displayName)
+                        .font(.system(size: 13.5, weight: .heavy))
+                        .foregroundStyle(FanTheme.ink)
+                        .lineLimit(1)
+                    Text("更多菜单 · 点按灰圆即可打开")
+                        .font(.system(size: 11))
+                        .foregroundStyle(FanTheme.muted)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+
+            menuAction("gearshape", "应用设置", danger: false) {
+                closeMenu()
+                onOpenSettings(app)
+            }
+            menuAction("square.on.square", "多任务", danger: false) {
+                closeMenu()
+                runMultitask(app)
+            }
+            if !app.uiIsShared {
+                menuAction("trash", "卸载应用", danger: true) {
+                    closeMenu()
+                    onUninstall(app)
+                }
+            }
+            Button(action: closeMenu) {
+                Text("取消")
+                    .font(.system(size: 13.5, weight: .heavy))
+                    .foregroundStyle(Color(red: 0.353, green: 0.357, blue: 0.420))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 46)
+                    .background(Color(red: 0.941, green: 0.945, blue: 0.961),
+                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 10)
+        }
+        .padding(10)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: FanTheme.shadow.opacity(0.26), radius: 30, x: 0, y: 22)
+    }
+
+    private func menuAction(_ symbol: String, _ title: String, danger: Bool,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(danger ? Color(red: 0.886, green: 0.330, blue: 0.361)
+                                            : Color(red: 0.482, green: 0.486, blue: 0.549))
+                Text(title)
+                    .font(.system(size: 13.5, weight: .bold))
+                    .foregroundStyle(danger ? Color(red: 0.886, green: 0.330, blue: 0.361)
+                                            : FanTheme.ink)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 46)
+            .background(danger ? Color(red: 0.992, green: 0.941, blue: 0.945) : FanTheme.row,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 8)
+        .padding(.horizontal, 2)
+    }
+
+    // MARK: Actions
+
+    private func openFolder(_ app: LCAppModel) {
+        guard !app.uiIsShared,
+              let folder = app.uiSelectedContainer?.folderName,
+              let url = URL(string: "shareddocuments://\(LCPath.dataPath.path)/\(folder)") else { return }
+        UIApplication.shared.open(url)
+    }
+
+    private func runMultitask(_ app: LCAppModel) {
+        Task { try? await app.runApp(multitask: !app.shouldLaunchInMultitaskMode) }
+    }
+
+    private func rebuild() {
+        var out: [FanItem] = []
+        out.reserveCapacity(apps.count)
+        for app in apps {
+            let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
+            out.append(FanItem(
+                id: app.appInfo.bundleIdentifier() ?? app.appInfo.relativeBundlePath ?? UUID().uuidString,
+                app: app,
+                cover: LCGalleryCoverStore.shared.cover(for: app, wide: false),
+                accent: LCGalleryColorStore.shared.color(for: app),
+                genre: meta.genre ?? "应用",
+                version: app.version,
+                size: LCGallerySizeStore.shared.sizeText(for: app),
+                intro: meta.intro.isEmpty ? "长按封面可更换自定义封面。" : meta.intro
+            ))
+        }
+        items = out
+        if index >= out.count {
+            index = max(0, out.count - 1)
+        }
     }
 }
 
