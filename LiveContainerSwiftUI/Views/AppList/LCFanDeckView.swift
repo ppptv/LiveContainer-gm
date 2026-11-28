@@ -223,8 +223,21 @@ struct LCFanDeckView: View {
                 // re-centres the page; that is what used to move the deck to a
                 // new height on every touch. Each layer here is pinned with an
                 // explicit alignment inside a fixed-size box instead.
-                deckLayer(size: size, canvasWidth: geo.size.width,
-                          canvasHeight: geo.size.height - (mode == 0 ? 82 : 56) - 76)
+                Group {
+                    if mode == 0 {
+                        deckLayer(size: size, canvasWidth: geo.size.width,
+                                  canvasHeight: geo.size.height - 82 - 76)
+                    } else {
+                        // FIX v110: the dock's list button used to only set
+                        // `mode`, and nothing read it — the deck stayed on
+                        // screen, so the tap appeared to do nothing at all.
+                        listMode(apps: items)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity,
+                                   alignment: .top)
+                            // 56 top bar + 26 hint + 8 breathing room
+                            .padding(.top, 90)
+                    }
+                }
                     .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
                     .overlay(alignment: .top) { chrome(size: size) }
                     .overlay(alignment: .bottom) { dock.padding(.bottom, 8) }
@@ -707,4 +720,99 @@ extension LCFanDeckView {
         .padding(.top, 58)
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
     }
+}
+
+// MARK: - List mode
+
+extension LCFanDeckView {
+    /// A compact vertical list, used when the dock's list button is selected.
+    ///
+    /// This did not exist before: `mode` was toggled by the dock but no view
+    /// ever read it, so tapping the list glyph changed nothing on screen.
+    func listMode(apps: [LCAppModel]) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 12) {
+                ForEach(Array(apps.enumerated()), id: \.offset) { idx, app in
+                    listRow(app: app)
+                }
+                // Clearance so the last row can scroll clear of the dock
+                // (64 dock + 8 inset + 24 breathing room).
+                Color.clear.frame(height: 104)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 8)
+        }
+    }
+
+    private func listRow(app: LCAppModel) -> some View {
+        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: false)
+        let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
+        let accent = LCGalleryColorStore.shared.color(for: app)
+
+        return HStack(spacing: 14) {
+            // Thumbnail, like a product row in a shop list.
+            Image(uiImage: cover)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 68, height: 68)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(app.displayName)
+                    .font(.system(size: 16.5, weight: .heavy))
+                    .foregroundStyle(FanDeckTheme.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text(meta.genre ?? "应用")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(FanDeckTheme.muted)
+                    .lineLimit(1)
+
+                Text(LCGallerySizeStore.shared.sizeText(for: app))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(FanDeckTheme.muted)
+            }
+
+            Spacer(minLength: 8)
+
+            // RIGHT SIDE: a launch button and nothing else.
+            Button {
+                onLaunch(app)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text("启动")
+                        .font(.system(size: 13, weight: .heavy))
+                }
+                .foregroundStyle(accent)
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .background(FanDeckTheme.pinkSoft, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.04), lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { onLaunch(app) }
+        .contextMenu {
+            Button { onOpenSettings(app) } label: {
+                Label("设置", systemImage: "gearshape")
+            }
+            Button { onRequestCover(app) } label: {
+                Label("更换封面", systemImage: "photo")
+            }
+            Button(role: .destructive) { onUninstall(app) } label: {
+                Label("卸载", systemImage: "trash")
+            }
+        }
+    }
+
 }
