@@ -5050,7 +5050,8 @@ private enum FanTheme {
     static let row = Color(red: 0.969, green: 0.969, blue: 0.980)
     static let chip = Color(red: 0.941, green: 0.945, blue: 0.961)
     static let shadow = Color(red: 0.149, green: 0.125, blue: 0.204)
-    static let coverShadow = Color(red: 0.235, green: 0.157, blue: 0.196)
+    // Scrim laid over the waiting cards — warm near-black, not pure black.
+    static let deckShade = Color(red: 0.094, green: 0.075, blue: 0.129)
 }
 
 private struct FanItem {
@@ -5071,6 +5072,9 @@ private struct FanPose {
     var scale: CGFloat
     var opacity: Double
     var z: Double
+    /// How many slots behind the front card this one sits, 0…2. Kept as a
+    /// fraction so the shading can cross-fade smoothly while the deck slides.
+    var recede: Double = 0
 }
 
 // CMYK-free white mix, the same `mixWhite()` the design uses to tint the
@@ -5087,11 +5091,11 @@ private func fanBlend(_ color: Color, _ amount: CGFloat) -> Color {
 private struct FanCardView: View {
     var item: FanItem
     var cardSize: CGSize
-    var elevation: Int = 2
+    /// How many slots behind the front card this one sits (0…2), fractional
+    /// while the deck slides so shading and shadow can cross-fade.
+    var recede: Double = 0
     var onLaunch: () -> Void
     var onMore: () -> Void
-    var onFolder: () -> Void
-    var onMultitask: () -> Void
     var onCover: () -> Void
 
     private var artH: CGFloat { cardSize.height * 400.0 / 604.0 }
@@ -5099,34 +5103,29 @@ private struct FanCardView: View {
     // Everything inside the card scales with its width, so a short screen
     // shrinks the whole object instead of clipping the button row.
     private var sc: CGFloat { max(0.72, min(1, cardSize.width / 328)) }
+    /// 1 = front card, 0.5 = one slot back, 0 = two slots back.
+    private var lift: Double { max(0, 1 - recede / 2) }
+    // Cards behind are darkened rather than made transparent: a solid card in
+    // shade reads as depth, a half-transparent one just reads as washed out.
+    private var shade: Double { min(recede, 2) * 0.18 }
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .top) {
-                Image(uiImage: item.cover)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: cardSize.width, height: artH)
-                    .clipped()
-                    .overlay(
-                        LinearGradient(colors: [.black.opacity(0.10), .clear],
-                                       startPoint: .top, endPoint: .bottom)
-                            .frame(height: artH * 0.32),
-                        alignment: .top
-                    )
-                HStack(spacing: 0) {
-                    chipButton("folder", label: "数据文件夹", action: onFolder)
-                    Spacer(minLength: 0)
-                    chipButton("square.on.square", label: "多任务", action: onMultitask)
-                }
-                .padding(.horizontal, 16 * sc)
-                .padding(.top, 16 * sc)
-            }
-            .frame(width: cardSize.width, height: artH)
-            .contentShape(Rectangle())
-            // Long-press the artwork only: this is LC's own "choose a cover",
-            // and it must never be taken over by the app menu any more.
-            .onLongPressGesture(minimumDuration: 0.48, maximumDistance: 10) { onCover() }
+            Image(uiImage: item.cover)
+                .resizable()
+                .scaledToFill()
+                .frame(width: cardSize.width, height: artH)
+                .clipped()
+                .overlay(
+                    LinearGradient(colors: [.black.opacity(0.10), .clear],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: artH * 0.32),
+                    alignment: .top
+                )
+                .contentShape(Rectangle())
+                // Long-press the artwork only: this is LC's own "choose a
+                // cover", and it must never be taken over by the app menu.
+                .onLongPressGesture(minimumDuration: 0.48, maximumDistance: 10) { onCover() }
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(item.app.displayName)
@@ -5176,27 +5175,34 @@ private struct FanCardView: View {
         .frame(width: cardSize.width, height: cardSize.height)
         .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.035), lineWidth: 1)
-        )
-        .shadow(color: FanTheme.shadow.opacity(elevation == 0 ? 0.10 : 0.16),
-                radius: elevation == 0 ? 12 : 21, x: 0, y: elevation == 0 ? 10 : 18)
-        .shadow(color: FanTheme.shadow.opacity(elevation == 2 ? 0.06 : 0),
-                radius: 1.5, x: 0, y: 1)
+        .overlay(shell)
+        // Three shadows on the front card: a dense rim shadow that actually
+        // lands on the cards behind, a broad ambient one that floats it off
+        // the page, and a hair of contact shadow at the bottom edge. All of
+        // them fade out as the card recedes, so a card sliding forward brightens
+        // continuously instead of popping.
+        .shadow(color: FanTheme.shadow.opacity(0.14 + 0.28 * lift),
+                radius: 12 + 2 * (1 - lift), x: 0, y: 8 + 2 * (1 - lift))
+        .shadow(color: FanTheme.shadow.opacity(0.20 * lift),
+                radius: 50, x: 0, y: 36)
+        .shadow(color: FanTheme.shadow.opacity(0.14 * lift),
+                radius: 3, x: 0, y: 1.5)
     }
 
-    private func chipButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 17 * sc, weight: .semibold))
-                .foregroundStyle(Color(red: 0.302, green: 0.302, blue: 0.349))
-                .frame(width: 40 * sc, height: 40 * sc)
-                .background(Color.white.opacity(0.94), in: Circle())
-                .shadow(color: FanTheme.coverShadow.opacity(0.18), radius: 8, x: 0, y: 5)
+    // Dimming for the cards behind + a hair of top light on the edge, so the
+    // front card reads as a raised surface even where no shadow can fall.
+    private var shell: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(FanTheme.deckShade.opacity(shade))
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(colors: [.white.opacity(0.35 + 0.60 * lift),
+                                            .white.opacity(0.04 + 0.18 * lift),
+                                            .black.opacity(0.12 - 0.05 * lift)],
+                                   startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
     }
 }
 
@@ -5355,7 +5361,7 @@ struct LCFanHomeView: View {
         .padding(.horizontal, 22)
         .frame(height: 56)
         .overlay(
-            Text(mode == 0 ? "应用图书馆" : "我的应用")
+            Text(mode == 0 ? "应用卡片" : "应用列表")
                 .font(.system(size: 17, weight: .heavy))
                 .foregroundStyle(FanTheme.ink)
         )
@@ -5416,10 +5422,9 @@ struct LCFanHomeView: View {
     }
 
     private func poseFor(_ i: Int) -> FanPose {
-        let n = max(items.count, 1)
-        var rel = (CGFloat(i - index) + relShift).truncatingRemainder(dividingBy: CGFloat(n))
-        if rel < -CGFloat(n) / 2 { rel += CGFloat(n) }
-        if rel > CGFloat(n) / 2 { rel -= CGFloat(n) }
+        // The card that just flew out keeps its own slot while the rest of the
+        // deck slides one step, so it must not inherit the shift.
+        let rel = relative(i, shift: fadedIndex == i ? 0 : relShift)
 
         if flyIndex == i {
             return FanPose(x: flyX, y: flyY, rot: flyRot,
@@ -5428,11 +5433,13 @@ struct LCFanHomeView: View {
 
         let c = max(-2, min(2, rel))
         let a = abs(c)
-        var x = c * 16
-        var y = -a * 2
-        var rot = Double(c) * 12.5
-        var scale = 1 - a * 0.05
-        var opacity = Double(abs(rel) > 2 ? 0 : 1 - a * 0.13)
+        var x = c * 22
+        var y = -a * 5 - (a == 0 ? 6 : 0)
+        var rot = Double(c) * 13
+        var scale = 1 - a * 0.06
+        // No cross-fade for depth any more: cards stay opaque and pick up the
+        // shade overlay instead, which keeps them looking solid behind.
+        var opacity: Double = abs(rel) > 2 ? 0 : 1
 
         if i == index && abs(rel) < 0.001 && (dragW != 0 || dragH != 0) {
             x += dragW
@@ -5441,8 +5448,24 @@ struct LCFanHomeView: View {
             scale = 1.01
             opacity = 1
         }
-        if fadedIndex == i { opacity *= fadeOpacity }
-        return FanPose(x: x, y: y, rot: rot, scale: scale, opacity: opacity, z: 50 - Double(a))
+        var z = 50 - Double(a)
+        if fadedIndex == i {
+            opacity *= fadeOpacity
+            // It fades back in at the tail while the card that held that slot
+            // is still sliding away — tuck it a hair behind so the two never
+            // double up into a ghost.
+            z -= 0.5
+        }
+        return FanPose(x: x, y: y, rot: rot, scale: scale, opacity: opacity,
+                       z: z, recede: Double(min(2, abs(rel))))
+    }
+
+    private func relative(_ i: Int, shift: CGFloat) -> CGFloat {
+        let n = max(items.count, 1)
+        var rel = (CGFloat(i - index) + shift).truncatingRemainder(dividingBy: CGFloat(n))
+        if rel < -CGFloat(n) / 2 { rel += CGFloat(n) }
+        if rel > CGFloat(n) / 2 { rel -= CGFloat(n) }
+        return rel
     }
 
     private func cardStack(cardSize: CGSize) -> some View {
@@ -5450,15 +5473,12 @@ struct LCFanHomeView: View {
             ForEach(visibleIndices(), id: \.self) { i in
                 if i < items.count {
                     let pose = poseFor(i)
-                    let slot = max(0, min(2, Int((50 - pose.z).rounded())))
                     FanCardView(
                         item: items[i],
                         cardSize: cardSize,
-                        elevation: 2 - slot,
+                        recede: pose.recede,
                         onLaunch: { onLaunch(items[i].app) },
                         onMore: { openMenu(items[i].app) },
-                        onFolder: { openFolder(items[i].app) },
-                        onMultitask: { runMultitask(items[i].app) },
                         onCover: { onRequestCover(items[i].app) }
                     )
                     .scaleEffect(pose.scale)
@@ -5529,8 +5549,10 @@ struct LCFanHomeView: View {
         dragW = 0
         dragH = 0
         let dir = CGFloat(direction)
+        // Drag left deals the card to the LEFT: the card keeps travelling the
+        // way the finger threw it (−560 for dir = 1), tipping counter-clockwise.
         withAnimation(.timingCurve(0.28, 0.70, 0.30, 1.0, duration: 0.34)) {
-            flyX = dir * 560
+            flyX = -dir * 560
             flyY = dir * 26
             flyRot = -Double(dir) * 20
             flyScale = 0.92
@@ -5552,7 +5574,10 @@ struct LCFanHomeView: View {
         t.disablesAnimations = true
         withTransaction(t) {
             index = ((old + direction) % n + n) % n
-            relShift = -CGFloat(direction)
+            // The deck slides the same way the card went: dragging left means
+            // the neighbour that was waiting on the RIGHT becomes the front
+            // card, so it starts one slot right and eases into place.
+            relShift = CGFloat(direction)
             flyIndex = nil
             flyX = 0
             flyY = 0
@@ -5564,7 +5589,7 @@ struct LCFanHomeView: View {
         }
         withAnimation(.easeOut(duration: 0.5)) { relShift = 0 }
         withAnimation(.easeOut(duration: 0.32)) { fadeOpacity = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.34) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             fadedIndex = nil
             fadeOpacity = 1
         }
@@ -5819,7 +5844,7 @@ struct LCFanHomeView: View {
                         .font(.system(size: 13.5, weight: .heavy))
                         .foregroundStyle(FanTheme.ink)
                         .lineLimit(1)
-                    Text("更多菜单 · 点按灰圆即可打开")
+                    Text("长按封面可更换封面")
                         .font(.system(size: 11))
                         .foregroundStyle(FanTheme.muted)
                 }
@@ -5832,6 +5857,12 @@ struct LCFanHomeView: View {
             menuAction("gearshape", "应用设置", danger: false) {
                 closeMenu()
                 onOpenSettings(app)
+            }
+            if !app.uiIsShared {
+                menuAction("folder", "数据文件夹", danger: false) {
+                    closeMenu()
+                    openFolder(app)
+                }
             }
             menuAction("square.on.square", "多任务", danger: false) {
                 closeMenu()
@@ -5887,10 +5918,20 @@ struct LCFanHomeView: View {
     // MARK: Actions
 
     private func openFolder(_ app: LCAppModel) {
-        guard !app.uiIsShared,
-              let folder = app.uiSelectedContainer?.folderName,
-              let url = URL(string: "shareddocuments://\(LCPath.dataPath.path)/\(folder)") else { return }
+        // No folder name yet (the app has never been launched) still opens the
+        // data root, so the entry is never a dead button.
+        let path = dataFolder(for: app).map { "\(LCPath.dataPath.path)/\($0)" } ?? LCPath.dataPath.path
+        guard let url = URL(string: "shareddocuments://\(path)") else { return }
         UIApplication.shared.open(url)
+    }
+
+    // The selected container wins; a never-launched app has no live container
+    // object yet, so fall back to the data folder assigned at install time.
+    private func dataFolder(for app: LCAppModel) -> String? {
+        guard !app.uiIsShared else { return nil }
+        let folder = app.uiSelectedContainer?.folderName ?? app.uiDefaultDataFolder
+        guard let folder, !folder.isEmpty else { return nil }
+        return folder
     }
 
     private func runMultitask(_ app: LCAppModel) {
