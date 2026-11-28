@@ -5776,6 +5776,13 @@ struct LCFanHomeView: View {
 
     private var plusButton: some View {
         Menu {
+            // SideStore is the sign-in / sideload console. Keep a persistent
+            // entry here (tap or long-press the plus) so it can never be hidden
+            // by a layout regression again — the top-right button is secondary.
+            Button { onOpenSideStore() } label: {
+                Label("打开 SideStore", systemImage: "app.badge.checkmark")
+            }
+            Divider()
             if canInstall {
                 Button { onInstallIPA() } label: {
                     Label("从 IPA 安装", systemImage: "doc.badge.plus")
