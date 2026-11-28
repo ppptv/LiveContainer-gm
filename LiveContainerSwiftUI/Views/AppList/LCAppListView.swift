@@ -5196,13 +5196,13 @@ private struct FanCardView: View, Equatable {
         // once and only its transform animates. Depth shading still cross-fades
         // continuously, but that now lives in the parent as a cheap alpha fill
         // (see cardStack) instead of inside this Equatable subtree.
-        // PERF: flatten the card FACE — text, gradients and rim — into ONE
-        // static texture, the same trick the iOS app switcher uses. The three
-        // shadows are added AFTER rasterisation on purpose: if they are inside
-        // the group, the radius-50 blur grows the bitmap by ~100pt on each
-        // side, which shifts the card's alignment centre and makes it render
-        // oversized and cropped. Keeping them outside preserves exact layout.
-        .drawingGroup(opaque: false, colorMode: .extendedLinear)
+        // PERF v103: NO drawingGroup here. Under a live rotation3DEffect a
+        // drawingGroup is re-rasterised every frame (the 3D transform invalidates
+        // the flattened texture), which was the real source of the stutter.
+        // Worse, its bitmap is sized to include the blur margin, so ZStack
+        // centred the inflated bitmap instead of the card — the off-axis drift.
+        // Equatable + constant shadow params already avoid body rebuilds and
+        // blur re-rasterisation; the GPU just moves three static layers.
         .shadow(color: FanTheme.shadow.opacity(0.42), radius: 12, x: 0, y: 8)
         .shadow(color: FanTheme.shadow.opacity(0.20), radius: 50, x: 0, y: 36)
         .shadow(color: FanTheme.shadow.opacity(0.14), radius: 3, x: 0, y: 1.5)
@@ -5322,7 +5322,10 @@ struct LCFanHomeView: View {
         let maxW = min(328, max(220, size.width - 44))
         var w = maxW
         var h = w * 604.0 / 328.0
-        let available = size.height - 56 - 26 - 96
+        // FIX v103: the old reserve was 96pt, but the dock is 64pt + 8pt
+        // bottom inset = 72pt. Over-reserving 24pt shrank a 393x852 iPhone
+        // from the spec 328pt to ~315pt. With 72pt the full 328x604 fits.
+        let available = size.height - 56 - 26 - 72
         if h > available && available > 260 {
             h = available
             w = h * 328.0 / 604.0
@@ -5643,10 +5646,10 @@ struct LCFanHomeView: View {
                 phase = clamp01(abs(v.translation.width) / travel)
             }
             .onEnded { v in
-                guard !busy, items.count > 1 else {
-                    phase = 0
-                    return
-                }
+                // FIX v103: never touch phase while an animation owns it.
+                // Resetting phase to 0 mid-flight snapped all cards back and
+                // was the other half of the "cards vanished" bug.
+                guard !busy, items.count > 1 else { return }
                 // Same commit rule as the approved web prototype:
                 // >22% travel or a flick faster than 550 pt/s commits,
                 // otherwise the deck springs back without moving a neighbour.
@@ -5661,6 +5664,11 @@ struct LCFanHomeView: View {
     private func flowTo(_ target: CGFloat) {
         guard !busy else { return }
         busy = true
+        // FIX v103: freeze the direction for the whole animation. A second
+        // swipe used to rewrite `flowDir` mid-flight; flowIndices()/poseFor()
+        // then assigned all four cards to the hidden pose (7) and the deck
+        // appeared empty. Capturing it here makes head/staging deterministic.
+        let dir = flowDir
         if target == 1 { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
         let remaining = abs(target - phase)
         let dur = 0.52 * Double(max(0.12, remaining))
@@ -5669,7 +5677,7 @@ struct LCFanHomeView: View {
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) {
-                if target == 1 { head = wrapped(head + flowDir) }
+                if target == 1 { head = self.wrapped(self.head + dir) }
                 phase = 0
                 busy = false
             }
