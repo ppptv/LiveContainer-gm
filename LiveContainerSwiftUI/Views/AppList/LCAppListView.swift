@@ -5284,6 +5284,12 @@ struct LCFanHomeView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                // FIX v102: this VStack had no explicit width, so SwiftUI sized
+                // it from its widest child's intrinsic frame (inflated by the
+                // card's shadows + 3D transform) and centred that oversized
+                // stack in the screen — every child (title, dots, cards, dock)
+                // drifted right together. Pin it to the full geometry width.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .bottom) {
                     dock.padding(.bottom, 8)
                 }
@@ -5586,43 +5592,45 @@ struct LCFanHomeView: View {
     }
 
     private func cardStack(cardSize: CGSize) -> some View {
-        ZStack(alignment: .top) {
-            ForEach(flowIndices(), id: \.self) { i in
-                if i < items.count {
-                    let pose = poseFor(i)
-                    // FIX: transform order and scaling follow the design spec.
-                    // - Only pose.scale drives size. The old depthScale inflated
-                    //   the card from its 328pt spec and pushed it off-screen.
-                    // - A SINGLE yaw rotation with the default perspective keeps
-                    //   the card centred; two stacked 3D effects each applied
-                    //   their own perspective and drifted the anchor.
-                    // - zIndex (not translateZ) orders the deck, so the two
-                    //   cards can never intersect regardless of depth.
-                    FanCardView(
-                        item: items[i],
-                        cardSize: cardSize,
-                        onLaunch: { onLaunch(items[i].app) },
-                        onMore: { openMenu(items[i].app) },
-                        onCover: { onRequestCover(items[i].app) }
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 34, style: .continuous)
-                            .fill(FanTheme.deckShade
-                                .opacity(FanCardView.shadeOpacity(for: pose.recede)))
-                    )
-                    .rotation3DEffect(.degrees(pose.yaw), axis: (x: 0, y: 1, z: 0),
-                                      anchor: .center, anchorZ: 0, perspective: 1 / 900)
-                    .scaleEffect(pose.scale)
-                    .offset(x: pose.x, y: 6)
-                    .opacity(pose.opacity)
-                    .zIndex(pose.z)
-                    .allowsHitTesting(pose.z >= 3)
+        GeometryReader { deckGeo in
+            ZStack {
+                ForEach(flowIndices(), id: \.self) { i in
+                    if i < items.count {
+                        let pose = poseFor(i)
+                        // FIX v102: place each card with an ABSOLUTE position
+                        // measured from the deck's own geometry centre. The
+                        // previous version relied on ZStack's implicit centre,
+                        // but a card wrapped in drawingGroup + three shadows +
+                        // a 3D rotation reports an inflated intrinsic frame, so
+                        // ZStack centred that inflated box and pushed the whole
+                        // stack off-axis. position(x:) ignores intrinsic size.
+                        FanCardView(
+                            item: items[i],
+                            cardSize: cardSize,
+                            onLaunch: { onLaunch(items[i].app) },
+                            onMore: { openMenu(items[i].app) },
+                            onCover: { onRequestCover(items[i].app) }
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 34, style: .continuous)
+                                .fill(FanTheme.deckShade
+                                    .opacity(FanCardView.shadeOpacity(for: pose.recede)))
+                        )
+                        .rotation3DEffect(.degrees(pose.yaw), axis: (x: 0, y: 1, z: 0),
+                                          anchor: .center, anchorZ: 0, perspective: 1 / 900)
+                        .scaleEffect(pose.scale)
+                        .opacity(pose.opacity)
+                        .zIndex(pose.z)
+                        .allowsHitTesting(pose.z >= 3)
+                        .position(x: deckGeo.size.width / 2 + pose.x,
+                                  y: cardSize.height / 2 + 6)
+                    }
                 }
             }
+            .frame(width: deckGeo.size.width, height: deckGeo.size.height)
+            .contentShape(Rectangle())
+            .simultaneousGesture(deckDrag)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .contentShape(Rectangle())
-        .simultaneousGesture(deckDrag)
     }
 
     private var travel: CGFloat { deckWidth * 0.42 + 40 }
@@ -5699,15 +5707,26 @@ struct LCFanHomeView: View {
                     .font(.system(size: 14.5, weight: .heavy))
                     .foregroundStyle(FanTheme.ink)
                     .lineLimit(1)
-                Text("\(item.genre) · \(item.version)")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(FanTheme.muted)
-                    .lineLimit(1)
-                    .padding(.top, 2)
-                Text(item.size)
-                    .font(.system(size: 17, weight: .heavy))
-                    .foregroundStyle(FanTheme.ink)
-                    .padding(.top, 6)
+                // Version and size share the same small, light label style, each
+                // on its own capsule chip — the old 17pt heavy size dominated
+                // the row and looked inconsistent with the version label.
+                HStack(spacing: 6) {
+                    Text("\(item.genre) · \(item.version)")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(FanTheme.muted)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(FanTheme.chip, in: Capsule())
+                    Text(item.size)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(FanTheme.muted)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(FanTheme.chip, in: Capsule())
+                }
+                .padding(.top, 4)
             }
             Spacer(minLength: 0)
 
