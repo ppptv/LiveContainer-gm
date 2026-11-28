@@ -5264,74 +5264,81 @@ struct LCFanHomeView: View {
     var body: some View {
         GeometryReader { geo in
             let cardSize = fanCardSize(in: geo.size)
+            // FIX v106: the blurred-cover backdrop lives OUTSIDE the clipped
+            // page. It was a child of the same ZStack that now gets pinned to
+            // the screen width and `.clipped()`, so `ignoresSafeArea()` stopped
+            // working and the status-bar strip and home-indicator area fell
+            // back to plain white — the uncovered bands the user circled.
+            // Background first, clipped content on top: the page stays
+            // screen-wide while the backdrop still bleeds into both safe areas.
             ZStack {
                 flowBackground.ignoresSafeArea()
-                VStack(spacing: 0) {
-                    topBar
-                    if mode == 0 {
-                        hintRow
-                    }
-                    ZStack {
-                        if items.isEmpty {
-                            emptyState
-                        } else if mode == 0 {
-                            cardStack(cardSize: cardSize, deckWidth: geo.size.width)
-                                .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                        } else {
-                            listStack
-                                .transition(.opacity.combined(with: .offset(y: 10)))
+                ZStack {
+                    VStack(spacing: 0) {
+                        topBar
+                        if mode == 0 {
+                            hintRow
                         }
+                        ZStack {
+                            if items.isEmpty {
+                                emptyState
+                            } else if mode == 0 {
+                                cardStack(cardSize: cardSize, deckWidth: geo.size.width)
+                                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                            } else {
+                                listStack
+                                    .transition(.opacity.combined(with: .offset(y: 10)))
+                            }
+                        }
+                        // FIX v105: align the deck to the TOP of the remaining
+                        // space, not its centre. With `maxHeight: .infinity` the
+                        // ZStack centred the card in whatever height was left, and
+                        // since the leftover space is taller than the card the deck
+                        // drifted down at the top and ran under the dock at the
+                        // bottom — the "上下错位" the user reported.
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     }
-                    // FIX v105: align the deck to the TOP of the remaining
-                    // space, not its centre. With `maxHeight: .infinity` the
-                    // ZStack centred the card in whatever height was left, and
-                    // since the leftover space is taller than the card the deck
-                    // drifted down at the top and ran under the dock at the
-                    // bottom — the "上下错位" the user reported.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .frame(width: geo.size.width, alignment: .center)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .overlay(alignment: .bottom) {
+                        dock.padding(.bottom, 8)
+                    }
+                    if let app = menuApp {
+                        menuOverlay(app)
+                    }
                 }
-                .frame(width: geo.size.width, alignment: .center)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .overlay(alignment: .bottom) {
-                    dock.padding(.bottom, 8)
+                // FIX v105: the sort menu used to be a child of the stack that
+                // gets pinned to the screen width and `.clipped()`, so its
+                // 216pt panel — anchored with a 22pt leading inset — was
+                // sliced off at the left edge of the clip rect. Attached from
+                // OUTSIDE the clipped page, it draws at its true position.
+                .overlay(alignment: .topLeading) {
+                    if sortShown {
+                        sortPopover
+                    }
                 }
-                if let app = menuApp {
-                    menuOverlay(app)
-                }
+                // FIX v104 — THE ROOT CAUSE, reproduced and verified in a
+                // standalone SwiftUI probe on a real 402pt iPhone 16 Pro
+                // simulator:
+                //
+                //   probe WITHOUT this clamp : head-card centre 247.3pt (+46.3)
+                //   probe WITH    this clamp : head-card centre 200.8pt (-0.2)
+                //
+                // Why it drifts: the deck parks neighbours outside the screen
+                // on purpose — the right-hand card's frame ends at ~506pt on a
+                // 402pt display. SwiftUI honours a child's frame even off-screen,
+                // so the ancestor stack grows to ~506pt and everything inside
+                // is centred on that over-wide box: measured title +55pt,
+                // dock +49pt, head card +62pt — all shifted RIGHT by ~(506−402)/2.
+                //
+                // Why earlier attempts failed: `.frame(maxWidth: .infinity)`
+                // still ACCEPTS an oversized proposal, and `.clipped()` alone
+                // only trims drawing while the child keeps reporting its width
+                // upward. Only an explicit `width:` equal to the real screen
+                // width refuses the inflated proposal.
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                .clipped()
             }
-            // FIX v105: the sort menu used to be a child of the stack that gets
-            // pinned to the screen width and `.clipped()`, so its 216pt panel —
-            // anchored with a 22pt leading inset — was sliced off at the left
-            // edge of the clip rect. Attached to the ZStack from OUTSIDE, above
-            // the clipped page, so it draws at its true position and is never
-            // trimmed.
-            .overlay(alignment: .topLeading) {
-                if sortShown {
-                    sortPopover
-                        .allowsHitTesting(true)
-                }
-            }
-            // FIX v104 — THE ROOT CAUSE, reproduced and verified in a standalone
-            // SwiftUI probe on a real 402pt iPhone 16 Pro simulator:
-            //
-            //   probe WITHOUT this clamp : head-card centre 247.3pt (+46.3 off)
-            //   probe WITH    this clamp : head-card centre 200.8pt (-0.2 off)
-            //
-            // Why it drifts: the deck parks neighbours outside the screen on
-            // purpose — the right-hand card's frame ends at ~506pt on a 402pt
-            // display. SwiftUI honours a child's frame even off-screen, so the
-            // ancestor stack grows to ~506pt and everything inside is centred
-            // on that over-wide box: measured title +55pt, dock +49pt, head
-            // card +62pt — all shifted RIGHT by roughly (506−402)/2.
-            //
-            // Why the previous attempts failed: `.frame(maxWidth: .infinity)`
-            // still ACCEPTS an oversized proposal, and `.clipped()` alone only
-            // trims drawing while the child keeps reporting its full width
-            // upward. Only an explicit `width:` equal to the real screen width
-            // refuses the inflated proposal, so the overflowing cards can no
-            // longer widen this stack or its ancestors.
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
-            .clipped()
             // Keep the single width source in sync with the actual layout.
             // Rotation and split-view resizes both land here.
             .onAppear { deckWidth = geo.size.width }
@@ -5369,26 +5376,58 @@ struct LCFanHomeView: View {
         return CGSize(width: w, height: h)
     }
 
-    /// The centred app's cover, heavily blurred, as the page backdrop. The
-    /// image is keyed by app identity so a swipe cross-fades the old and new
-    /// covers slowly instead of snapping — a fast change is visible as a flash.
+    /// The current card's cover, heavily blurred, as the page backdrop.
+    ///
+    /// FIX v106: the backdrop now cross-fades on the SAME progress value that
+    /// drives the deck, so it changes smoothly with the finger instead of
+    /// snapping once the swipe commits. Previously it was keyed to `head`,
+    /// which only changes at the END of a swipe — the backdrop stayed on the
+    /// old cover for the whole gesture and then jumped, which is the "突兀"
+    /// flash the user reported.
+    ///
+    /// Two layers: the outgoing cover underneath, the incoming one fading in
+    /// on top with opacity = progress. Both are pre-blurred, so the transition
+    /// is a single composited alpha ramp — no re-running a gaussian pass.
     private var flowBackground: some View {
         ZStack {
             FanTheme.page
-            if items.indices.contains(head) {
-                Image(uiImage: items[head].cover)
+            if items.indices.contains(fallbackHead) {
+                Image(uiImage: items[fallbackHead].cover)
                     .resizable()
                     .scaledToFill()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .scaleEffect(1.12)
+                    .scaleEffect(1.15)
                     .blur(radius: 34, opaque: true)
-                    .opacity(0.40)
-                    .id(items[head].id)
-                    .transition(.opacity)
+                    .opacity(0.42)
             }
-            FanTheme.page.opacity(0.42)
+            if let incoming = incomingHead, items.indices.contains(incoming) {
+                Image(uiImage: items[incoming].cover)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .scaleEffect(1.15)
+                    .blur(radius: 34, opaque: true)
+                    .opacity(0.42 * Double(phase))
+            }
+            FanTheme.page.opacity(0.40)
         }
-        .animation(.easeInOut(duration: 1.2), value: head)
+        // Only the head CHANGING at rest needs a soft settle; during a drag
+        // `phase` drives the fade directly every frame.
+        .animation(busy ? nil : .easeInOut(duration: 0.55), value: head)
+    }
+
+    /// The cover that should sit UNDER the incoming one: the current head,
+    /// unless a swipe has already committed far enough that the head moved
+    /// mid-animation.
+    private var fallbackHead: Int {
+        items.indices.contains(head) ? head : 0
+    }
+
+    /// The cover fading in over the current one while a swipe is in flight.
+    private var incomingHead: Int? {
+        guard items.count > 1, phase > 0.001 else { return nil }
+        let idx = wrapped(head + flowDir)
+        return items.indices.contains(idx) ? idx : nil
     }
 
     // MARK: Top bar
@@ -5566,74 +5605,104 @@ struct LCFanHomeView: View {
         }
     }
 
-    /// Left / centre / right plus one hidden staging card. Only three are
-    /// ever drawn opaque; the fourth exists solely to enter after the handoff.
+    /// The five slots around the head that make up the visible rail:
+    /// −2, −1, 0 (head), +1, +2. Rendering the two outer slots is what lets a
+    /// card slide IN from beyond the edge while another slides OUT, so the
+    /// carousel never shows a gap at the ends of the gesture.
     private func flowIndices() -> [Int] {
         let n = items.count
         guard n > 0 else { return [] }
-        var out = [wrapped(head - 1), head, wrapped(head + 1)]
-        let staging = wrapped(flowDir > 0 ? head + 2 : head - 2)
-        if !out.contains(staging) { out.append(staging) }
+        var out: [Int] = []
+        for k in -2...2 {
+            let idx = wrapped(head + k)
+            if !out.contains(idx) { out.append(idx) }
+        }
         return out
     }
 
+    /// COVER FLOW — a rigid card carousel.
+    ///
+    /// The prototype this was ported from interpolated each card between
+    /// named poses and then pushed the two mid-flight cards APART (centre
+    /// card −45·gap, incoming +120·gap). At p=0.5 that put the outgoing card
+    /// at −114pt and the incoming one at +189pt: both half off-screen with a
+    /// 304pt hole between them. That reads as "two cards flying apart", not as
+    /// Cover Flow, which is exactly what the user objected to.
+    ///
+    /// Real Cover Flow is a CAROUSEL: the cards keep a constant slot pitch and
+    /// the whole rail slides. A card's every attribute — x, yaw, scale,
+    /// shading — is a pure function of its signed distance `d` from the
+    /// centre slot, so nothing can ever separate from the rail or leave a gap
+    /// in the middle. At any point in the gesture there is always a card
+    /// crossing the centre.
+    ///
+    ///   slot: 0 = head, ±1 = neighbours, ±2 = staging
+    ///   d   = slot − (progress · direction)     ← shared by ALL cards
     private func poseFor(_ i: Int) -> FanPose {
         guard items.count > 0 else { return flowPose(7) }
-        let left = wrapped(head - 1)
-        let right = wrapped(head + 1)
-        let staging = wrapped(flowDir > 0 ? head + 2 : head - 2)
-        let active = busy && phase > 0.001
 
-        if !active {
-            if i == head { return flowPose(0) }
-            if i == left { return flowPose(1) }
-            if i == right { return flowPose(2) }
-            return flowPose(7)
-        }
+        // Slot index on the rail, as the SHORTEST signed offset from head.
+        // Using a raw index difference rather than a modulo wrap keeps the
+        // rail's left/right sides unambiguous for small lists, where +2 and
+        // -2 can address the same app.
+        let n = items.count
+        var raw = i - head
+        if raw > n / 2 { raw -= n }
+        if raw < -(n / 2) { raw += n }
+        guard abs(raw) <= 2 else { return flowPose(7) }
+        let slot = CGFloat(raw)
 
-        let q = smooth(phase)
-        let outT = clamp01(phase / 0.5)
-        let inT = clamp01((phase - 0.5) / 0.5)
-        let gap = CGFloat(sin(Double.pi * Double(phase)))
+        // The rail advances by exactly one slot over p ∈ 0…1, but NOT linearly.
+        //
+        // With a linear ramp, p=0.5 leaves the outgoing card at d=−0.5 and the
+        // incoming one at +0.5: two equal cards side by side with nobody owning
+        // the centre, which reads as "two cards sliding" instead of Cover Flow.
+        // Easing the rail forward early makes the new card take over the centre
+        // during the first half of the gesture, so the composition always has a
+        // clear lead card with tilted neighbours — the actual Cover Flow look.
+        let eased = 1 - pow(1 - Double(clamp01(phase)), 2.2)
+        let d = slot - CGFloat(eased) * CGFloat(flowDir)
 
-        if flowDir > 0 {
-            if i == head {
-                var p = mixPose(flowPose(0), flowPose(1), q)
-                p.depth -= 60 * gap
-                p.x -= 45 * gap
-                p.z = 4
-                return p
-            }
-            if i == right {
-                var p = mixPose(flowPose(2), flowPose(0), q)
-                p.depth += 90 * gap
-                p.x += 120 * gap
-                p.scale -= 0.04 * gap
-                p.z = 5
-                return p
-            }
-            if i == left { return mixPose(flowPose(1), flowPose(3), outT) }
-            if i == staging { return mixPose(flowPose(6), flowPose(2), inT) }
-        } else {
-            if i == head {
-                var p = mixPose(flowPose(0), flowPose(2), q)
-                p.depth -= 60 * gap
-                p.x += 45 * gap
-                p.z = 4
-                return p
-            }
-            if i == left {
-                var p = mixPose(flowPose(1), flowPose(0), q)
-                p.depth += 90 * gap
-                p.x -= 120 * gap
-                p.scale -= 0.04 * gap
-                p.z = 5
-                return p
-            }
-            if i == right { return mixPose(flowPose(2), flowPose(4), outT) }
-            if i == staging { return mixPose(flowPose(5), flowPose(1), inT) }
-        }
-        return flowPose(7)
+        // A card two slots out is off the rail entirely.
+        if abs(d) > 2.02 { return flowPose(7) }
+
+        let ad = abs(d)
+
+        // x: constant pitch → cards stay adjacent, never split apart.
+        let x = d * sideX
+
+        // yaw: the signature Cover Flow cue. With a linear ramp the neighbours
+        // sat at only ~27° halfway through a swipe and the deck read as flat
+        // upright cards sliding sideways instead of a rotating carousel. This
+        // curve reaches ~44° at half a slot and 70° at a full slot, so the
+        // tilt is unmistakable, then eases out to 85° at the edge.
+        let yawDeg: Double = {
+            let sign: Double = d >= 0 ? 1 : -1
+            if ad <= 1 { return sign * 70 * (1 - pow(1 - Double(ad), 1.4)) }
+            return sign * (70 + Double(ad - 1) * 15)
+        }()
+
+        // scale: 1.00 at the centre, 0.86 one slot out, 0.70 two slots out.
+        let scale: CGFloat = {
+            if ad <= 1 { return 1.0 - ad * 0.14 }
+            return max(0.70, 0.86 - (ad - 1) * 0.16)
+        }()
+
+        // opacity: fully opaque on the rail, fading over the outer slot only.
+        let opacity: Double = ad <= 1.7
+            ? 1.0
+            : max(0.0, 1.0 - Double((ad - 1.7) / 0.32))
+
+        // Depth shading: darker the further from the centre.
+        let recede: Double = min(2.0, Double(ad))
+
+        // z-order is monotonic in |d| — the card nearest the centre is always
+        // in front, so two planes can never interleave or fuse.
+        let z: Double = 3.0 - Double(min(2.0, ad)) * 0.5
+
+        return FanPose(x: x, y: 0, rot: 0, scale: scale, opacity: opacity, z: z,
+                       recede: recede, yaw: yawDeg,
+                       depth: -70 * CGFloat(min(2.0, ad)))
     }
 
     private func cardStack(cardSize: CGSize, deckWidth width: CGFloat) -> some View {
