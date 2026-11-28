@@ -5282,18 +5282,33 @@ struct LCFanHomeView: View {
                                 .transition(.opacity.combined(with: .offset(y: 10)))
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // FIX v105: align the deck to the TOP of the remaining
+                    // space, not its centre. With `maxHeight: .infinity` the
+                    // ZStack centred the card in whatever height was left, and
+                    // since the leftover space is taller than the card the deck
+                    // drifted down at the top and ran under the dock at the
+                    // bottom — the "上下错位" the user reported.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
                 .frame(width: geo.size.width, alignment: .center)
                 .frame(maxHeight: .infinity, alignment: .top)
                 .overlay(alignment: .bottom) {
                     dock.padding(.bottom, 8)
                 }
-                if sortShown {
-                    sortPopover
-                }
                 if let app = menuApp {
                     menuOverlay(app)
+                }
+            }
+            // FIX v105: the sort menu used to be a child of the stack that gets
+            // pinned to the screen width and `.clipped()`, so its 216pt panel —
+            // anchored with a 22pt leading inset — was sliced off at the left
+            // edge of the clip rect. Attached to the ZStack from OUTSIDE, above
+            // the clipped page, so it draws at its true position and is never
+            // trimmed.
+            .overlay(alignment: .topLeading) {
+                if sortShown {
+                    sortPopover
+                        .allowsHitTesting(true)
                 }
             }
             // FIX v104 — THE ROOT CAUSE, reproduced and verified in a standalone
@@ -5660,24 +5675,39 @@ struct LCFanHomeView: View {
         .simultaneousGesture(deckDrag)
     }
 
-    private var travel: CGFloat { deckWidth * 0.42 + 40 }
+    // FIX v105: the drag distance was `deckWidth * 0.42 + 40` ≈ 209pt on a
+    // 402pt screen — you had to drag nearly half a screen just to reach 100%,
+    // which felt heavy and made quick flick-through impossible. The approved
+    // web prototype reaches full travel in about a third of a card width, so a
+    // short, light flick is already enough to advance one card.
+    private var travel: CGFloat { cardTravel }
+
+    /// Full-swipe distance: a third of the deck width, clamped so it stays
+    /// comfortable on both the smallest and largest iPhones.
+    private var cardTravel: CGFloat {
+        min(150, max(96, deckWidth * 0.30))
+    }
 
     private var deckDrag: some Gesture {
-        DragGesture(minimumDistance: 6)
+        // A smaller minimum distance lets the deck start responding to the
+        // first few points of movement. The old 6pt threshold swallowed micro
+        // adjustments, which read as "it won't follow my finger".
+        DragGesture(minimumDistance: 2)
             .onChanged { v in
                 guard !busy, items.count > 1 else { return }
-                flowDir = v.translation.width < 0 ? 1 : -1
-                phase = clamp01(abs(v.translation.width) / travel)
+                // Follow the finger 1:1 — direction is taken from a tiny
+                // horizontal bias rather than requiring a large translation.
+                let dx = v.translation.width
+                if abs(dx) > 0.5 { flowDir = dx < 0 ? 1 : -1 }
+                phase = clamp01(abs(dx) / travel)
             }
             .onEnded { v in
-                // FIX v103: never touch phase while an animation owns it.
-                // Resetting phase to 0 mid-flight snapped all cards back and
-                // was the other half of the "cards vanished" bug.
                 guard !busy, items.count > 1 else { return }
-                // Same commit rule as the approved web prototype:
-                // >22% travel or a flick faster than 550 pt/s commits,
-                // otherwise the deck springs back without moving a neighbour.
-                if phase > 0.22 || abs(v.velocity.width) > 550 {
+                // A light flick (400 pt/s) is enough, and 15% travel commits,
+                // so consecutive cards can be flipped through without waiting
+                // for a deliberate half-screen drag each time.
+                let projected = abs(v.predictedEndTranslation.width)
+                if phase > 0.15 || projected > travel * 1.2 || abs(v.velocity.width) > 400 {
                     flowTo(1)
                 } else {
                     flowTo(0)
@@ -5695,9 +5725,14 @@ struct LCFanHomeView: View {
         let dir = flowDir
         if target == 1 { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
         let remaining = abs(target - phase)
-        let dur = 0.52 * Double(max(0.12, remaining))
+        // FIX v105: 0.52s per card made a run of swipes feel like it was
+        // fighting back — each advance blocked the next gesture. The web
+        // prototype settles in ~300ms, quick enough to chain flicks.
+        let dur = target == 1
+            ? 0.30 * Double(max(0.35, remaining))
+            : 0.22 * Double(max(0.35, remaining))
         withAnimation(.easeOut(duration: dur)) { phase = target }
-        DispatchQueue.main.asyncAfter(deadline: .now() + dur + 0.02) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + dur + 0.01) {
             var t = Transaction()
             t.disablesAnimations = true
             withTransaction(t) {
@@ -5925,7 +5960,6 @@ struct LCFanHomeView: View {
                 .strokeBorder(Color.black.opacity(0.05), lineWidth: 1)
         )
         .shadow(color: FanTheme.shadow.opacity(0.22), radius: 24, x: 0, y: 20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(.leading, 22)
         .padding(.top, 60)
         .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .topLeading)))
