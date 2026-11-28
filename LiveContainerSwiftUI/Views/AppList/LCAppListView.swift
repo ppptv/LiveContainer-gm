@@ -98,18 +98,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     // Landscape owns the full screen: no pill, no tab bar there.
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 
-    // Two home surfaces. Game is the default; software is a reserved page
-    // that only shows a placeholder until its own design is done. This is
-    // deliberately separate from LCUseGalleryHome, which stays the settings
-    // safety valve for the classic list.
-    @State private var homePageMode = 0
-    // Portrait gallery dock: 0 = poster home, 1 = app list. Selection is owned
-    // here so the dock can drive both surfaces; scrolling also writes it back.
-    @State private var galleryDockSelection = 0
-    // Shared with the gallery so the bottom dock's list/grid buttons and the
-    // content view always reflect the same layout choice.
-    @State private var gameListLayout = 1
-
     // Gallery card context-menu uninstall target + confirmation.
     @State private var galleryUninstallApp: LCAppModel?
     @State private var galleryUninstallShow = false
@@ -161,8 +149,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 // Keep the gallery inside the same NavigationView as the original
                 // app list, so the native install / SideStore / link / sort toolbar
                 // items are present and use the existing, proven actions.
-                // Games and software are now two zones INSIDE the gallery's own
-                // segmented bar — the old standalone software placeholder is gone.
                 withGalleryOverlays(
                     NavigationView {
                         ZStack {
@@ -180,8 +166,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                 apps: sortedApps,
                                 hiddenApps: sortedHiddenApps,
                                 topBeadHidden: $topBeadHidden,
-                                dockSelection: $galleryDockSelection,
-                                gameListLayout: $gameListLayout,
                                 onLaunch: { app in
                                     Task { @MainActor in
                                         do { try await app.runApp() }
@@ -241,12 +225,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             // Sliding the bead away must not leave a hole: off
                             // the bar it can float, so it leaves with the bar
                             // instead of fading into reserved space.
-                            // One bottom dock replaces the old left switcher
-                            // and the right-hand install bead. Portrait only:
-                            // in landscape the showcase owns the whole screen.
-                            .overlay(alignment: .bottom) {
+                            .overlay(alignment: .bottomTrailing) {
+                                // Portrait only. In landscape the showcase is
+                                // the whole screen — the bead floats over the
+                                // first poster and there is nothing to scroll
+                                // it away with, so it simply isn't there.
                                 if verticalSizeClass != .compact {
-                                    galleryDock
+                                    installBeadMenu
                                 }
                             }
                         }
@@ -262,39 +247,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             } else {
                 legacyBody
             }
-        }
-    }
-
-    // Reserved surface for the software home. Intentionally a plain, quiet
-    // placeholder: the visual design is coming in a later pass. It carries
-    // its own switcher so the user can always return to the game surface.
-    private var softwarePlaceholder: some View {
-        ZStack {
-            Color(red: 0.055, green: 0.075, blue: 0.13)
-                .ignoresSafeArea()
-            VStack(spacing: 14) {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 46, weight: .light))
-                    .foregroundStyle(Color.white.opacity(0.82))
-                Text("软件")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("此页面待设计")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.white.opacity(0.55))
-            }
-            .padding(.bottom, 96)
-        }
-        .overlay(alignment: .bottomLeading) {
-            if verticalSizeClass != .compact {
-                homeModeSwitcher
-            }
-        }
-        // The switcher is portrait-only. A turn while the software placeholder
-        // is up would otherwise strand the landscape showcase behind an empty
-        // page with no way back, so returning to the game surface is automatic.
-        .onChange(of: verticalSizeClass) { mode in
-            if mode == .compact && homePageMode == 1 { homePageMode = 0 }
         }
     }
 
@@ -1342,160 +1294,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
     }
 
-    // Portrait bottom dock, split into two groups like the reference: a left
-    // glass capsule holding SideStore / list / grid, and a separate round pink
-    // install bead pinned to the right edge. Actions use the original LC handlers.
-    private var galleryDock: some View {
-        HStack(alignment: .center, spacing: 0) {
-            // Left capsule: store, list view and grid view.
-            HStack(spacing: 2) {
-                // SideStore: open it when installed, otherwise show help.
-                Menu {
-                    if UserDefaults.sideStoreExist() {
-                        Button {
-                            LCUtils.openSideStore(delegate: self)
-                        } label: {
-                            Label("SideStore", systemImage: "app.badge")
-                        }
-                    } else {
-                        Button("Help", systemImage: "questionmark") { helpPresent = true }
-                    }
-                    Button("lc.appList.openLink".loc, systemImage: "link") {
-                        Task { await onOpenWebViewTapped() }
-                    }
-                } label: {
-                    dockGlyph(symbol: "app.badge", label: "SideStore")
-                }
-                .buttonStyle(.plain)
-
-                // List view.
-                Button { gameListLayout = 0 } label: {
-                    dockGlyph(symbol: "list.bullet", label: "列表", selected: gameListLayout == 0)
-                }
-                .buttonStyle(.plain)
-
-                // Grid view.
-                Button { gameListLayout = 1 } label: {
-                    dockGlyph(symbol: "square.grid.2x2.fill", label: "卡片", selected: gameListLayout == 1)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 6)
-            .background(Color.white, in: Capsule())
-            .overlay(Capsule().stroke(Color.black.opacity(0.06), lineWidth: 1))
-            .shadow(color: .black.opacity(0.10), radius: 16, y: 5)
-
-            Spacer(minLength: 12)
-
-            // Right: standalone round pink install bead.
-            Menu {
-                installMenuItems
-            } label: {
-                pinkPlusButton
-            } primaryAction: {
-                choosingIPA = true
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 18)
-        // Sit right on the home indicator like the iOS 27 floating bar.
-        .padding(.bottom, 4)
-    }
-
-    // Icon-only glyph for the left dock capsule. The active list/grid glyph is
-    // highlighted so the current layout is obvious; SideStore stays neutral.
-    private func dockGlyph(symbol: String, label: String, selected: Bool = false) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 18, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? Color(red: 0.94, green: 0.45, blue: 0.57) : Color.primary)
-            .frame(width: 46, height: 40)
-            .background {
-                if selected {
-                    Capsule().fill(Color(red: 1.0, green: 0.93, blue: 0.95))
-                }
-            }
-            .contentShape(Capsule())
-            .accessibilityLabel(label)
-    }
-
-    // The soft pink install bead carried over from the earlier build: a white
-    // plus on tinted glass with a matching soft red shadow.
-    private var pinkPlusButton: some View {
-        Image(systemName: "plus")
-            .font(.system(size: 22, weight: .heavy))
-            .foregroundStyle(.white)
-            .frame(width: 52, height: 52)
-            .background(
-                LinearGradient(colors: [
-                    Color(red: 0.99, green: 0.64, blue: 0.72),
-                    Color(red: 0.94, green: 0.44, blue: 0.57)
-                ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                in: Circle()
-            )
-            .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.30),
-                    radius: 12, y: 4)
-            .accessibilityLabel("安装应用")
-    }
-
-    @ViewBuilder
-    private var installMenuItems: some View {
-        Button("lc.appList.installFromIpa".loc, systemImage: "doc.badge.plus") {
-            choosingIPA = true
-        }
-        if sharedModel.multiLCStatus != 2 {
-            Button("lc.appList.installFromUrl".loc, systemImage: "link.badge.plus") {
-                Task { await startInstallFromUrl() }
-            }
-        }
-    }
-
-    // Left-side page switcher (software placeholder only). Game is the default
-    // surface; software is a reserved placeholder for a later design. Keeping
-    // this on the outer Group means the switcher survives a switch, so the user
-    // can always get back.
-    private var homeModeSwitcher: some View {
-        HStack(spacing: 2) {
-            homeModeChip(title: "游戏", symbol: "gamecontroller", active: homePageMode == 0) {
-                homePageMode = 0
-            }
-            homeModeChip(title: "软件", symbol: "list.bullet", active: homePageMode == 1) {
-                homePageMode = 1
-            }
-        }
-        // 42pt chip + 3pt inset on each side = 48pt, exactly the height of
-        // the red install bead, so both bottom-anchored controls share one
-        // centre line rather than merely one baseline.
-        .padding(3)
-        .lcGlassCapsule()
-        .overlay {
-            Capsule()
-                .stroke(Color.white.opacity(0.72), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
-        .shadow(color: Color.black.opacity(0.24), radius: 12, y: 4)
-        // The reference is a pale glass pill with a white selected chip and
-        // dark glyphs. Pinning the light scheme keeps that exact contrast
-        // regardless of the system setting or the dark poster underneath.
-        .environment(\.colorScheme, .light)
-        .padding(.leading, 20)
-        .padding(.bottom, 22)
-    }
-
-    private func homeModeChip(title: String, symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 17, weight: active ? .semibold : .regular))
-                .foregroundStyle(active ? Color.black : Color.black.opacity(0.55))
-                .frame(width: 48, height: 42)
-                .background(active ? Color.white : Color.clear, in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        // No visible label by design; keep the two controls named for VoiceOver.
-        .accessibilityLabel(title)
-    }
-
     // Everything the old three-glyph pill could do, folded into one bead.
     // It floats over the page in an overlay instead of sitting in the toolbar:
     // a toolbar item brings the system's own glass plate along, and that plate
@@ -2262,13 +2060,6 @@ final class LCGalleryOnlineCoverStore {
         return englishTitles[name]
     }
 
-    // The portrait white card shows the resolved English title on line one and
-    // the bundle's own (usually Chinese) name on line two. Resolution already
-    // happened during cover lookup, so this is a synchronous cache read.
-    static func englishName(for displayName: String) -> String? {
-        cachedEnglishTitle(for: displayName)
-    }
-
     private static func storeEnglishTitle(_ title: String, for name: String) {
         englishTitlesLock.lock()
         englishTitles[name] = title
@@ -3032,9 +2823,7 @@ final class LCGallerySizeStore {
     static let sizeReady = Notification.Name("LCGallerySizeReady")
 
     private var cache: [String: String] = [:]
-    private var byteCache: [String: Int64] = [:]
     private var inFlight: Set<String> = []
-    private var totalInFlight = false
     private let queue = DispatchQueue(label: "lc.gallery.size", qos: .utility, attributes: .concurrent)
 
     func sizeText(for app: LCAppModel) -> String {
@@ -3042,35 +2831,6 @@ final class LCGallerySizeStore {
         if let hit = cache[key] { return hit }
         requestSize(for: app, key: key)
         return "计算中…"
-    }
-
-    // Sum of every guest app's on-disk footprint, shown next to the app count.
-    // Bytes are cached per bundle, so the total is exact and needs no parse of
-    // the per-app display strings.
-    func totalText(for apps: [LCAppModel]) -> String {
-        guard !apps.isEmpty else { return "0 B" }
-        let keys = apps.map { Self.key(for: $0) }
-        if keys.allSatisfy({ byteCache[$0] != nil }) {
-            let sum = keys.reduce(Int64(0)) { $0 + (byteCache[$1] ?? 0) }
-            return ByteCountFormatter.string(fromByteCount: sum, countStyle: .file)
-        }
-        if !totalInFlight { requestTotal(apps, keys: keys) }
-        return "计算中…"
-    }
-
-    private func requestTotal(_ apps: [LCAppModel], keys: [String]) {
-        totalInFlight = true
-        queue.async {
-            var partial: [String: Int64] = [:]
-            for (app, key) in zip(apps, keys) {
-                partial[key] = Self.computeBytes(for: app)
-            }
-            DispatchQueue.main.async {
-                for (key, value) in partial { self.byteCache[key] = value }
-                self.totalInFlight = false
-                NotificationCenter.default.post(name: Self.sizeReady, object: nil)
-            }
-        }
     }
 
     private func requestSize(for app: LCAppModel, key: String) {
@@ -3093,10 +2853,6 @@ final class LCGallerySizeStore {
     }
 
     nonisolated private static func computeSizeText(for app: LCAppModel) -> String {
-        ByteCountFormatter.string(fromByteCount: computeBytes(for: app), countStyle: .file)
-    }
-
-    nonisolated private static func computeBytes(for app: LCAppModel) -> Int64 {
         var total: Int64 = 0
         if let bundlePath = app.appInfo.bundlePath() {
             total += directorySize(URL(fileURLWithPath: bundlePath))
@@ -3109,7 +2865,7 @@ final class LCGallerySizeStore {
             total += directorySize(container.containerURL)
             if started { container.containerURL.stopAccessingSecurityScopedResource() }
         }
-        return total
+        return ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
     }
 
     nonisolated private static func directorySize(_ url: URL) -> Int64 {
@@ -3161,76 +2917,81 @@ struct GalleryCardView: View {
 
     var body: some View {
         let appName = app.displayName
-        let appVersion = app.version
-        let appSize = LCGallerySizeStore.shared.sizeText(for: app)
-        let icon = app.appInfo.iconIsDarkIcon(false)
+        let cover = LCGalleryCoverStore.shared.cover(for: app)
         let tint = LCGalleryColorStore.shared.color(for: app)
         let containers = app.uiContainers
         let selectedContainer = app.uiSelectedContainer
         let isShared = app.uiIsShared
         let multitask = app.shouldLaunchInMultitaskMode
         let relative = app.appInfo.relativeBundlePath ?? ""
+        // Same anatomy as a landscape poster: a liquid-glass plate, the artwork
+        // inset inside it, and the title strip as the bottom edge of that same
+        // plate — name on the left, round controller button on the right.
+        let plateRadius: CGFloat = 22
+        let inset: CGFloat = 7
+        let innerRadius: CGFloat = plateRadius - inset
+        let stripHeight: CGFloat = 42
 
-        HStack(spacing: 12) {
-                if let ic = icon {
-                    Image(uiImage: ic).resizable().scaledToFill()
-                        .frame(width: 58, height: 58)
-                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 15, style: .continuous)
-                            .stroke(Color.white.opacity(0.4), lineWidth: 1))
-                        .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
+        VStack(spacing: 0) {
+            // 16:9 cover. `Color.clear` + aspectRatio is what makes the height
+            // follow the grid column's width without measuring anything.
+            Color.clear
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .overlay {
+                    Image(uiImage: cover)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .clipShape(RoundedRectangle(cornerRadius: innerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: innerRadius, style: .continuous)
+                        .stroke(Color.white.opacity(0.30), lineWidth: 1)
                         .allowsHitTesting(false)
-                }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(appName)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(appVersion)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.black.opacity(0.32), in: Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.22), lineWidth: 0.6))
-                        Text(appSize)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(Color.black.opacity(0.32), in: Capsule())
-                            .overlay(Capsule().stroke(Color.white.opacity(0.22), lineWidth: 0.6))
-                    }
-                }
-                .allowsHitTesting(false)
-                Spacer(minLength: 0)
+                )
+                .id("card-cover-\(appName)-\(coverTick)")
+                .padding(.horizontal, inset)
+                .padding(.top, inset)
+
+            HStack(spacing: 8) {
+                Text(appName)
+                    .font(.system(size: 15, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
+                    .shadow(color: .black.opacity(0.50), radius: 2.5, y: 1)
+                    .shadow(color: .black.opacity(0.28), radius: 10, y: 2)
+                Spacer(minLength: 4)
                 Button {
                     onLaunch(app)
                 } label: {
-                    Text("运行")
+                    Image(systemName: "gamecontroller.fill")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.white)
-                        .frame(width: 66, height: 34)
+                        .frame(width: 30, height: 30)
                         .lcTintedGlassCapsule(tint: tint)
                 }
                 .buttonStyle(.plain)
-                .contentShape(Rectangle())
+                .accessibilityLabel("运行 \(appName)")
+            }
+            .padding(.horizontal, inset + 5)
+            .frame(height: stripHeight)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .frame(height: compact ? 84 : 90)
-        .lcGlassCard(cornerRadius: 20)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .lcGlassCard(cornerRadius: plateRadius)
+        .clipShape(RoundedRectangle(cornerRadius: plateRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.20), lineWidth: 0.7)
+            RoundedRectangle(cornerRadius: plateRadius, style: .continuous)
+                .stroke(
+                    LinearGradient(colors: [
+                        Color.white.opacity(0.46),
+                        Color.white.opacity(0.14),
+                        Color.white.opacity(0.28)
+                    ], startPoint: .top, endPoint: .bottom),
+                    lineWidth: 1
+                )
                 .allowsHitTesting(false)
         )
-        .shadow(color: .black.opacity(0.22), radius: 12, y: 6)
+        .shadow(color: .black.opacity(0.32), radius: 14, y: 8)
         .contentShape(Rectangle())
         .contextMenu {
             // Full native-equivalent menu, matching LCAppBannerViewController.makeContextMenu().
@@ -3928,11 +3689,6 @@ struct LCHomeGalleryView: View {
     // Owned by the navigation bar's host, written from the scroll observer
     // below: direction of the list decides whether the plus bead is showing.
     @Binding var topBeadHidden: Bool
-    // Bottom dock selection: 0 = poster home, 1 = app list. Written by the
-    // dock and fed back from scroll position so the highlight stays truthful.
-    @Binding var dockSelection: Int
-    // List/grid layout, shared with the host so the bottom dock can switch it.
-    @Binding var gameListLayout: Int
     var onLaunch: (LCAppModel) -> Void
     var onOpenSettings: (LCAppModel) -> Void
     var onUninstall: (LCAppModel) -> Void
@@ -3957,10 +3713,6 @@ struct LCHomeGalleryView: View {
     // Overscroll at the very top (positive when the page is pulled down). The
     // hero uses it to grow and fill the gap instead of exposing the backdrop.
     @State private var pullDown: CGFloat = 0
-    // Live vertical scroll offset of the collapsing home surface. The poster
-    // height is bound directly to this value, so it tracks the finger instead
-    // of animating behind it — that is what makes the shrink feel continuous.
-    @State private var heroScrollY: CGFloat = 0
     @State private var coverTick = 0
     @State private var sizeTick = 0
     @State private var metaTick = 0
@@ -3982,32 +3734,9 @@ struct LCHomeGalleryView: View {
     // translation now (see landscapeSwipe), so a drag can never be swallowed by
     // a scroll view writing the index back mid-gesture.
     @State private var dragX: CGFloat = 0
-
-    // ===== v2 shopping-template navigation =====
-    // One namespace shared by the feed cards and the detail hero: the cover
-    // physically grows from the tapped card into the full-screen artwork and
-    // flies back on dismissal. This is the connective "silk" between screens —
-    // no view is torn down and popped, they animate as one continuous object.
-    @Namespace private var heroSpace
-    // Non-nil presents the detail screen over the feed. Nil = feed visible.
-    @State private var detailTarget: LCAppModel?
-    // Non-nil presents the container/storage manager over the detail screen.
-    @State private var containerTarget: LCAppModel?
-    // 0 = games, 1 = software. Automatic heuristic; no extra user action.
-    @State private var feedZone = 0
-    // 0 All · 1 Popular · 2 Recent · 3 Genre — drives the category capsules.
-    @State private var categoryFilter = 0
-    // Flip once on appear so the waterfall cards stagger in on the first frame.
-    @State private var feedAppeared = false
-
-    // Single motion vocabulary for every transition in this gallery. Spring
-    // for geometric moves (card ↔ hero, sheets), ease for opacity/chips.
-    private enum Motion {
-        static let hero = Animation.spring(response: 0.46, dampingFraction: 0.9, blendDuration: 0)
-        static let sheet = Animation.spring(response: 0.5, dampingFraction: 0.92, blendDuration: 0)
-        static let chip = Animation.easeInOut(duration: 0.28)
-        static let card = Animation.easeOut(duration: 0.42)
-    }
+    // How far the portrait list has covered the pinned poster: 0 = poster fully
+    // visible, 1 = list at the top and the poster receded behind it.
+    @State private var heroFade: CGFloat = 0
 
     // Every installed app takes part in the hero carousel. It used to be capped
     // at five, which made the sixth icon in the rail jump back to the first
@@ -4048,28 +3777,7 @@ struct LCHomeGalleryView: View {
             // render instead of two is most of the smoothness.
             .animation(.easeOut(duration: 0.2), value: verticalSizeClass)
 
-            // ===== Detail screen =====
-            // The tapped card's artwork is the SAME matched-geometry object as
-            // this hero, so opening detail grows the cover out of the card and
-            // dismissing flies it back — no pop, no hard cut. The rest of the
-            // page cross-fades around the shared cover.
-            if let app = detailTarget {
-                v2DetailPage(app: app)
-                    .zIndex(20)
-                    .transition(.asymmetric(insertion: .opacity, removal: .opacity))
-            }
-
-            // ===== Container / storage manager =====
-            // Slides up over detail. Independent sheet so closing it reveals
-            // the detail page exactly where it was.
-            if let app = containerTarget {
-                v2ContainerPage(app: app)
-                    .zIndex(30)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
         }
-        .animation(Motion.hero, value: detailTarget)
-        .animation(Motion.sheet, value: containerTarget)
         .onReceive(NotificationCenter.default.publisher(for: LCGalleryCoverStore.coverReady)) { _ in
             coverTick += 1
         }
@@ -4144,1108 +3852,157 @@ struct LCHomeGalleryView: View {
     // grid with stale geometry after rotating back — the list showed up empty.
     private var portraitPage: some View {
         ZStack(alignment: .top) {
-            if dockSelection == 0 {
-                homeDetailSurface
-            } else {
-                listSurface
-            }
-        }
-        // Rebuild when the dock surface changes so a list scrolled to the
-        // bottom cannot leave the home poster parked halfway off-screen.
-        .id("portrait-\(dockSelection)")
-        .background(Color.white.ignoresSafeArea())
-        // The gallery follows the system appearance now. The artwork and the
-        // cards keep their own dark surfaces, while every glass control picks
-        // up the user's light/dark setting instead of being pinned to one.
-        // Switching surfaces rebuilds the scroll view but not this state, so
-        // the poster would otherwise come back stuck at its collapsed height.
-        .onChange(of: dockSelection) { mode in
-            if mode == 0 { heroScrollY = 0 }
-        }
-    }
+            // The poster is pinned to the top edge now: it does not travel with
+            // the page any more. Only the list moves, and scrolling up slides
+            // the list over the poster while the poster loses focus behind it.
+            pinnedHero
 
-    // The classic app grid, kept intact for the dock's 列表 tab.
-    private var listSurface: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                cardsSection
-                hiddenSection
-                Spacer(minLength: 110)
-            }
-            .padding(.horizontal, sideMargin)
-            .padding(.top, 16)
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y + geo.contentInsets.top
-        } action: { _, y in
-            trackScroll(y)
-        }
-        // v2 feed is a white shopping-sheet: the blurred poster wash stays
-        // behind the landscape surface only, never under the portrait list.
-        .background(Color.white.ignoresSafeArea())
-    }
-
-    // Home: one continuous scroll surface. The poster, title band and list all
-    // travel together — scrolling up moves the cover off the top as well.
-    // Pulling past the top still stretches the cover with a damped spring.
-    private var homeDetailSurface: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            VStack(spacing: 0) {
-                shoppingHeader
-                shoppingSearchRow
-                shoppingFeatureBanner
-                shoppingFilterRow
-                if gameListLayout == 0 {
-                    shoppingRows
-                } else {
-                    shoppingGrid
-                }
-                Spacer(minLength: 140)
-            }
-        }
-        .onAppear { withAnimation(Motion.card) { feedAppeared = true } }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            geo.contentOffset.y + geo.contentInsets.top
-        } action: { _, y in
-            heroScrollY = y
-            trackScroll(y)
-        }
-        // Swipe the featured card sideways to change the current game. Vertical
-        // drags still belong to the scroll view, so only horizontal moves count.
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 24)
-                .onEnded { v in
-                    guard abs(v.translation.width) > abs(v.translation.height) else { return }
-                    if v.translation.width < -36 { goSlide(current + 1) }
-                    else if v.translation.width > 36 { goSlide(current - 1) }
-                }
-        )
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.55).onEnded { _ in requestCustomCover() }
-        )
-        // Solid paper background. The reference has no blurred colour wash:
-        // the page, the cards and the gutters all share one clean white sheet.
-        .background(Color.white.ignoresSafeArea())
-    }
-
-    // MARK: - Reference shopping home (white, airy, pink accents)
-
-    // The reference is a white shopping feed: a quiet header, one search row,
-    // a single featured card, low-contrast filter chips, then a two-column
-    // product grid with generous gutters. Everything below keeps the proven LC
-    // actions — install plus, SideStore, launch, settings, uninstall.
-    private var shoppingHeader: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LinearGradient(
-                        colors: [Color(red: 1.0, green: 0.66, blue: 0.73),
-                                 Color(red: 0.95, green: 0.45, blue: 0.58)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    ))
-                Image(systemName: "square.grid.2x2.fill")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 36, height: 36)
-
-            Spacer(minLength: 0)
-
-            VStack(spacing: 2) {
-                Text("我的游戏库")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.primary)
-                Text("\(apps.count) 个应用")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 0)
-
-            // SideStore lives here as the avatar, exactly like the reference's
-            // profile picture. It is one more door to refresh, never the only one.
-            Button { onOpenSideStoreOrHelp() } label: {
-                Group {
-                    if let sideStoreIcon {
-                        Image(uiImage: sideStoreIcon)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        Image(systemName: "app.badge")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.primary)
-                    }
-                }
-                .frame(width: 38, height: 38)
-                .background(Color(uiColor: .systemGray6), in: Circle())
-                .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("打开 SideStore")
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 10)
-    }
-
-    private var shoppingSearchRow: some View {
-        HStack(spacing: 10) {
-            Button { searchExpanded = true } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("搜索游戏、软件")
-                        .font(.system(size: 13))
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(Color.secondary)
-                .padding(.horizontal, 16)
-                .frame(height: 48)
-                .background(Color(uiColor: .systemGray6),
-                            in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-            .buttonStyle(.plain)
-
-            Menu {
-                Picker("Sort by", selection: Binding(
-                    get: { sortType },
-                    set: { onSortChange($0) }
-                )) {
-                    ForEach(AppSortType.allCases, id: \.self) { t in
-                        Label(t.displayName, systemImage: t.systemImage).tag(t)
-                    }
-                }
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 48, height: 48)
-                    .background(
-                        LinearGradient(colors: [
-                            Color(red: 0.99, green: 0.65, blue: 0.72),
-                            Color(red: 0.94, green: 0.44, blue: 0.57)
-                        ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("排序")
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-    }
-
-    @ViewBuilder
-    private var shoppingFeatureBanner: some View {
-        if current < apps.count {
-            let app = apps[current]
-            let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-            Button {
-                withAnimation(Motion.hero) { detailTarget = app }
-            } label: {
-                ZStack(alignment: .leading) {
-                    Image(uiImage: cover)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 158)
-                        .clipped()
-
-                    LinearGradient(stops: [
-                        .init(color: Color(red: 0.98, green: 0.48, blue: 0.59).opacity(0.98), location: 0.0),
-                        .init(color: Color(red: 0.98, green: 0.55, blue: 0.63).opacity(0.90), location: 0.46),
-                        .init(color: .clear, location: 0.82)
-                    ], startPoint: .leading, endPoint: .trailing)
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("本周精选")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(.white.opacity(0.92))
-                        Text(app.displayName)
-                            .font(.system(size: 22, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.82)
-                        HStack(spacing: 8) {
-                            HStack(spacing: 5) {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text("查看")
-                                    .font(.system(size: 11, weight: .bold))
-                            }
-                            .foregroundStyle(Color(red: 0.93, green: 0.40, blue: 0.53))
-                            .padding(.horizontal, 12)
-                            .frame(height: 28)
-                            .background(Color.white, in: Capsule())
-
-                            Text(LCGallerySizeStore.shared.sizeText(for: app))
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.86))
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.trailing, 86)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: 158)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-        } else {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color(uiColor: .systemGray6))
-                .frame(height: 158)
-                .overlay(
-                    Text("安装第一个应用后，这里会出现精选卡片")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                )
-                .padding(.horizontal, 20)
-                .padding(.top, 20)
-        }
-    }
-
-    private var shoppingFilterRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 7) {
-                shoppingZoneChip("游戏", icon: "gamecontroller.fill", zone: 0)
-                shoppingZoneChip("软件", icon: "list.bullet", zone: 1)
-
-                Rectangle()
-                    .fill(Color.black.opacity(0.08))
-                    .frame(width: 1, height: 18)
-                    .padding(.horizontal, 2)
-
-                shoppingFilterChip("全部", 0)
-                shoppingFilterChip("最近", 1)
-                shoppingFilterChip("占用", 2)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 2)
-        }
-        .padding(.top, 20)
-    }
-
-    private func shoppingZoneChip(_ title: String, icon: String, zone: Int) -> some View {
-        let active = feedZone == zone
-        return Button {
-            withAnimation(Motion.chip) {
-                feedZone = zone
-                categoryFilter = 0
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 12, weight: .bold))
-            }
-            .foregroundStyle(active
-                ? Color(red: 0.93, green: 0.40, blue: 0.53)
-                : Color.primary)
-            .padding(.horizontal, 13)
-            .frame(height: 34)
-            .background(
-                active
-                    ? Color(red: 1.0, green: 0.92, blue: 0.94)
-                    : Color(uiColor: .systemGray6),
-                in: Capsule()
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(title)分区")
-    }
-
-    private func shoppingFilterChip(_ title: String, _ filter: Int) -> some View {
-        let active = categoryFilter == filter
-        return Button {
-            withAnimation(Motion.chip) { categoryFilter = filter }
-        } label: {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(active ? Color.white : Color.secondary)
-                .padding(.horizontal, 14)
-                .frame(height: 34)
-                .background(
-                    active
-                        ? Color(red: 0.95, green: 0.47, blue: 0.59)
-                        : Color(uiColor: .systemGray6),
-                    in: Capsule()
-                )
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var shoppingGrid: some View {
-        Group {
-            if feedApps.isEmpty {
-                shoppingEmptyState
-            } else {
-                LazyVGrid(columns: [
-                    GridItem(.flexible(minimum: 0), spacing: 16),
-                    GridItem(.flexible(minimum: 0), spacing: 16)
-                ], spacing: 22) {
-                    ForEach(Array(feedApps.enumerated()), id: \.offset) { index, app in
-                        shoppingCard(app: app, index: index)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 20)
-    }
-
-    private var shoppingRows: some View {
-        Group {
-            if feedApps.isEmpty {
-                shoppingEmptyState
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(Array(feedApps.enumerated()), id: \.offset) { index, app in
-                        shoppingRow(app: app, index: index)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 20)
-    }
-
-    private var shoppingEmptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "square.grid.2x2")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("这个分区还没有应用")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 54)
-    }
-
-    @ViewBuilder
-    private func shoppingCard(app: LCAppModel, index: Int) -> some View {
-        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        VStack(alignment: .leading, spacing: 10) {
-            Color.clear
-                .aspectRatio(0.92, contentMode: .fit)
-                .overlay(
-                    Image(uiImage: cover)
-                        .resizable()
-                        .scaledToFill()
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            HStack(alignment: .center, spacing: 7) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.displayName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.86)
-                    Text(LCGallerySizeStore.shared.sizeText(for: app))
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Button { onLaunch(app) } label: {
-                    Image(systemName: "play.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 28, height: 28)
-                        .background(Color(red: 0.96, green: 0.53, blue: 0.64), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("启动 \(app.displayName)")
-            }
-            .padding(.horizontal, 2)
-        }
-        .padding(8)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.black.opacity(0.045), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.055), radius: 12, x: 0, y: 5)
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .opacity(feedAppeared ? 1 : 0)
-        .offset(y: feedAppeared ? 0 : 22)
-        .animation(Motion.card.delay(Double(index % 8) * 0.04), value: feedAppeared)
-        .onTapGesture {
-            withAnimation(Motion.hero) { detailTarget = app }
-        }
-        .contextMenu {
-            Button("启动", systemImage: "play") { onLaunch(app) }
-            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-        }
-    }
-
-    @ViewBuilder
-    private func shoppingRow(app: LCAppModel, index: Int) -> some View {
-        let icon = app.appInfo.iconIsDarkIcon(false)
-            ?? LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        HStack(spacing: 14) {
-            Image(uiImage: icon)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(app.displayName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(LCGalleryOnlineCoverStore.englishName(for: app.displayName) ?? app.displayName)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(LCGallerySizeStore.shared.sizeText(for: app))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 6)
-
-            Button { onLaunch(app) } label: {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(Color(red: 0.96, green: 0.53, blue: 0.64), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("启动 \(app.displayName)")
-        }
-        .padding(12)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(Color.black.opacity(0.045), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.05), radius: 12, x: 0, y: 5)
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .opacity(feedAppeared ? 1 : 0)
-        .offset(y: feedAppeared ? 0 : 18)
-        .animation(Motion.card.delay(Double(index % 8) * 0.035), value: feedAppeared)
-        .onTapGesture {
-            withAnimation(Motion.hero) { detailTarget = app }
-        }
-        .contextMenu {
-            Button("启动", systemImage: "play") { onLaunch(app) }
-            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-        }
-    }
-
-    // MARK: - v2 feed furniture (Silk motion system)
-
-    // Games / software are two zones of one feed. Classification uses the
-    // metadata LC already fetched: an app is a game when the store lookup
-    // returned a platform or genre. Everything else (SideStore, utilities) is
-    // software. No new flag is stored on disk.
-    private func isSoftware(_ app: LCAppModel) -> Bool {
-        let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
-        let bid = app.bundleIdentifier.lowercased()
-        if bid.contains("sidestore") { return true }
-        return (meta.platform ?? "").isEmpty && (meta.genre ?? "").isEmpty
-    }
-
-    private var zoneApps: [LCAppModel] {
-        let base = apps
-        switch feedZone {
-        case 1: return base.filter { isSoftware($0) }
-        default: return base.filter { !isSoftware($0) }
-        }
-    }
-
-    // Segmented zone bar. The highlight is a matched-geometry pill that glides
-    // between segments instead of jumping — the first of the "silk" transitions.
-    private var feedZoneBar: some View {
-        HStack(spacing: 3) {
-            zoneTab(title: "游戏", icon: "gamecontroller.fill", zone: 0)
-            zoneTab(title: "软件", icon: "list.bullet", zone: 1)
-        }
-        .padding(4)
-        .background(Color(uiColor: .systemGray6), in: Capsule())
-        .padding(.horizontal, sideMargin)
-        .padding(.top, 20)
-    }
-
-    private func zoneTab(title: String, icon: String, zone: Int) -> some View {
-        let active = feedZone == zone
-        return Button {
-            withAnimation(Motion.chip) { feedZone = zone }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 13, weight: .semibold))
-                Text(title).font(.system(size: 13, weight: .semibold))
-            }
-            .foregroundStyle(active ? Color.primary : Color.secondary)
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .background {
-                if active {
-                    Capsule().fill(Color.white)
-                        .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
-                        .matchedGeometryEffect(id: "zonePill", in: heroSpace)
-                }
-            }
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-    }
-
-    // Search row: the field opens LC's real searchable panel; the tint button
-    // opens the native sort picker. The avatar is a direct SideStore door —
-    // kept in addition to the dock's store glyph so refresh is never buried.
-    private var feedSearchRow: some View {
-        HStack(spacing: 10) {
-            Button { searchExpanded = true } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 14, weight: .semibold))
-                    Text("搜索应用").font(.system(size: 13))
-                }
-                .foregroundStyle(Color.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14)
-                .frame(height: 42)
-                .background(Color(uiColor: .systemGray6), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            }
-            .buttonStyle(.plain)
-
-            Menu {
-                Picker("Sort by", selection: Binding(
-                    get: { sortType },
-                    set: { onSortChange($0) }
-                )) {
-                    ForEach(AppSortType.allCases, id: \.self) { t in
-                        Label(t.displayName, systemImage: t.systemImage).tag(t)
-                    }
-                }
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(
-                        LinearGradient(colors: [
-                            Color(red: 0.98, green: 0.62, blue: 0.44),
-                            Color(red: 0.94, green: 0.42, blue: 0.34)
-                        ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    )
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                // Reuse the proven host action: opens SideStore when present,
-                // otherwise shows help. Never a dead button.
-                onOpenSideStoreOrHelp()
-            } label: {
-                Image(systemName: "app.badge")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.primary)
-                    .frame(width: 42, height: 42)
-                    .background(Color(uiColor: .systemGray6), in: Circle())
-                    .overlay(Circle().stroke(Color.black.opacity(0.06), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("打开 SideStore")
-        }
-        .padding(.horizontal, sideMargin)
-        .padding(.top, 18)
-    }
-
-    // Category capsules filter the current zone using existing metadata.
-    private var feedCategoryChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                categoryChip("全部", 0)
-                categoryChip("最近安装", 1)
-                categoryChip("占用最大", 2)
-                categoryChip("类型", 3)
-            }
-            .padding(.horizontal, sideMargin)
-        }
-        .padding(.top, 18)
-    }
-
-    private func categoryChip(_ title: String, _ filter: Int) -> some View {
-        let active = categoryFilter == filter
-        return Button {
-            withAnimation(Motion.chip) { categoryFilter = filter }
-        } label: {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(active ? .white : Color.secondary)
-                .padding(.horizontal, 16)
-                .frame(height: 32)
-                .background {
-                    if active {
-                        Capsule().fill(Color(red: 1.0, green: 0.52, blue: 0.52))
-                            .matchedGeometryEffect(id: "catPill", in: heroSpace)
-                    } else {
-                        Capsule().fill(Color(uiColor: .systemGray6))
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var feedApps: [LCAppModel] {
-        var list = zoneApps
-        switch categoryFilter {
-        case 1:
-            list = list.sorted { ($0.appInfo.bundleIdentifier() ?? "") > ($1.appInfo.bundleIdentifier() ?? "") }
-        case 2:
-            list = list.sorted {
-                LCGallerySizeStore.shared.sizeText(for: $0) > LCGallerySizeStore.shared.sizeText(for: $1)
-            }
-        case 3:
-            list = list.sorted {
-                (LCGalleryMetaStore.shared.gameMeta(for: $0).genre ?? "") <
-                (LCGalleryMetaStore.shared.gameMeta(for: $1).genre ?? "")
-            }
-        default: break
-        }
-        return list
-    }
-
-    // Waterfall grid: two independent columns with staggered card heights, so
-    // rows never line up into a rigid table. Each card fades and rises in with
-    // a per-index delay — the "silk waterfall" entrance.
-    private var waterfallGrid: some View {
-        let items = feedApps
-        let left = items.indices.filter { $0 % 2 == 0 }
-        let right = items.indices.filter { $0 % 2 == 1 }
-        return HStack(alignment: .top, spacing: 12) {
-            LazyVStack(spacing: 12) {
-                ForEach(left, id: \.self) { i in waterfallCard(app: items[i], index: i) }
-            }
-            LazyVStack(spacing: 12) {
-                ForEach(right, id: \.self) { i in waterfallCard(app: items[i], index: i) }
-            }
-        }
-        .padding(.horizontal, sideMargin)
-        .padding(.top, 14)
-    }
-
-    @ViewBuilder
-    private func waterfallCard(app: LCAppModel, index: Int) -> some View {
-        let bid = app.appInfo.bundleIdentifier() ?? "\(index)"
-        // Deterministic height rhythm: tall / medium / short repeated.
-        let ratio: CGFloat = [1.0, 0.78, 0.92, 0.7][index % 4]
-        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = w * ratio
-            ZStack(alignment: .bottomLeading) {
-                Image(uiImage: cover)
-                    .resizable().scaledToFill()
-                    .frame(width: w, height: h)
-                    .clipped()
-                    // The SAME id is used by the detail hero: tapping makes the
-                    // artwork grow out of this card into full screen.
-                    .matchedGeometryEffect(id: "cover-\(bid)", in: heroSpace,
-                                           isSource: detailTarget != app)
-                LinearGradient(stops: [
-                    .init(color: .clear, location: 0.38),
-                    .init(color: .black.opacity(0.42), location: 0.74),
-                    .init(color: .black.opacity(0.88), location: 1.0)
-                ], startPoint: .top, endPoint: .bottom)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.displayName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(LCGallerySizeStore.shared.sizeText(for: app))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                }
-                .padding(.horizontal, 11)
-                .padding(.bottom, 10)
-            }
-            .frame(width: w, height: h)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(Color.white.opacity(0.14), lineWidth: 0.8)
-            )
-        }
-        .frame(height: ((pageWidth - 2 * sideMargin - 12) / 2) *
-                       [1.0, 0.78, 0.92, 0.7][index % 4])
-        .shadow(color: .black.opacity(0.4), radius: 13, x: 0, y: 7)
-        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .opacity(feedAppeared ? 1 : 0)
-        .offset(y: feedAppeared ? 0 : 28)
-        .animation(Motion.card.delay(Double(index % 8) * 0.045), value: feedAppeared)
-        .onTapGesture {
-            withAnimation(Motion.hero) { detailTarget = app }
-        }
-        .contextMenu {
-            Button("启动", systemImage: "play") { onLaunch(app) }
-            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-        }
-    }
-
-    // MARK: - v2 detail page
-
-    private func v2DetailPage(app: LCAppModel) -> some View {
-        let bid = app.appInfo.bundleIdentifier() ?? app.displayName
-        let meta = LCGalleryMetaStore.shared.gameMeta(for: app)
-        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        let intro = LCGalleryMetaStore.shared.intro(for: app)
-        let heroH = pageWidth * 1.14
-        return ZStack(alignment: .top) {
-            // Opaque paper sheet: the detail screen must fully own its layer.
-            // The old tinted + black wash was translucent, so the home
-            // waterfall stayed visible underneath and the hierarchy collapsed.
-            Color.white.ignoresSafeArea()
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
-                    ZStack(alignment: .bottom) {
-                        // Reference detail: a soft pink stage with the artwork
-                        // inset as one large rounded card. Nothing translucent,
-                        // so the feed below can never show through.
-                        LinearGradient(colors: [
-                            Color(red: 1.0, green: 0.76, blue: 0.82),
-                            Color(red: 0.96, green: 0.53, blue: 0.65)
-                        ], startPoint: .top, endPoint: .bottom)
-                        .frame(width: pageWidth, height: heroH)
+                VStack(alignment: .leading, spacing: 0) {
+                    // The poster's own footprint. Empty, so it needs an explicit
+                    // hit shape; that is also where the replace-cover long
+                    // press lives now that the artwork no longer has a view of
+                    // its own in the hierarchy here.
+                    Color.clear
+                        .frame(height: heroHeight)
+                        .contentShape(Rectangle())
+                        .onLongPressGesture(minimumDuration: 0.55) { requestCustomCover() }
 
-                        Image(uiImage: cover)
-                            .resizable().scaledToFill()
-                            .frame(width: pageWidth - 40, height: heroH - 26)
-                            .clipped()
-                            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                            // Destination of the shared cover from the card.
-                            .matchedGeometryEffect(id: "cover-\(bid)", in: heroSpace,
-                                                   isSource: detailTarget == app)
-                    }
-                    .frame(width: pageWidth, height: heroH)
-                    .clipped()
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(alignment: .bottom) {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(app.displayName)
-                                    .font(.system(size: 27, weight: .heavy))
-                                    .foregroundStyle(.primary)
-                                Text("v\(app.version) · \(meta.genre ?? (isSoftware(app) ? "软件" : "游戏"))")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(LCGallerySizeStore.shared.sizeText(for: app))
-                                .font(.system(size: 17, weight: .bold))
-                                .foregroundStyle(.primary)
-                        }
-                        Text(intro)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                            .lineSpacing(4)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 10) {
-                            detailFact(icon: "clock", value: "v\(app.version)", label: "版本")
-                            detailFact(icon: "square.grid.2x2", value: meta.genre ?? "—", label: "类型")
-                            detailFact(icon: "folder", value: "\(app.appInfo.containers.count)", label: "容器")
-                        }
-                        .padding(.top, 4)
-
-                        // Launch + container management. SideStore and the
-                        // install plus remain on the dock underneath this sheet.
-                        HStack(spacing: 12) {
-                            Button {
-                                onLaunch(app)
-                            } label: {
-                                HStack(spacing: 7) {
-                                    Image(systemName: "play.fill")
-                                    Text("启动应用")
-                                }
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 54)
-                                .background(
-                                    LinearGradient(colors: [
-                                        Color(red: 0.99, green: 0.64, blue: 0.72),
-                                        Color(red: 0.94, green: 0.44, blue: 0.57)
-                                    ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                    in: RoundedRectangle(cornerRadius: 17, style: .continuous)
-                                )
-                                .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.25),
-                                        radius: 12, y: 5)
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                withAnimation(Motion.sheet) { containerTarget = app }
-                            } label: {
-                                Image(systemName: "square.stack.3d.up")
-                                    .font(.system(size: 19, weight: .semibold))
-                                    .foregroundStyle(.primary)
-                                    .frame(width: 54, height: 54)
-                                    .background(Color(uiColor: .systemGray6), in: Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("容器与存储管理")
-                        }
-                        .padding(.top, 8)
+                    VStack(alignment: .leading, spacing: 0) {
+                        iconRail
+                        cardsSection
+                        hiddenSection
+                        // Clearance for the home indicator AND for the bead, which
+                        // floats in the bottom-right corner.
+                        Spacer(minLength: 96)
                     }
                     .padding(.horizontal, sideMargin)
-                    .padding(.top, 18)
-                    .padding(.bottom, 150)
+                    // From here down the list is a surface of its own: it ramps
+                    // in over 56pt so the moving edge is never a hard seam, then
+                    // stays solid. That is what makes scrolling read as the list
+                    // covering the poster, instead of the poster sliding out
+                    // from underneath a transparent list.
+                    .background(alignment: .top) { listSurface }
                 }
             }
-            // Back + change-cover, pinned above the flying hero.
-            HStack {
-                Button {
-                    withAnimation(Motion.hero) { detailTarget = nil }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.94), in: Circle())
-                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+            .ignoresSafeArea(edges: .top)
+            // Portrait stays night-side no matter what the system is set to.
+            // The page is built on artwork, not on system surfaces: everything
+            // from the caps to the frosted run pill is tuned against a dark
+            // card, and in light mode those materials flipped to white slabs
+            // sitting on a dark poster. Pinning the scheme here keeps every card
+            // the same fixed dark object in both settings; landscape
+            // deliberately does not inherit this (see galleryBackdrop).
+            .environment(\.colorScheme, .dark)
+            .simultaneousGesture(heroGesture)
+            // The old PreferenceKey reader never fired, which is why neither the
+            // pull-down fill nor the collapsing dock ever moved. ScrollGeometry
+            // is the supported way to observe this.
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, y in
+                let pull = max(0, -y)
+                if abs(pull - pullDown) > 0.5 {
+                    pullDown = min(pull, 340)
                 }
-                .buttonStyle(.plain)
-                Spacer()
-                // Keep the two lifelines visible even while this sheet covers
-                // the dock: SideStore (refresh apps) and install (+ IPA/URL).
-                Menu {
-                    Button("从 IPA 安装", systemImage: "doc.badge.plus") { onInstallIPA() }
-                    Button("从链接安装", systemImage: "link.badge.plus") { onInstallURL() }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .heavy))
-                        .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                        .background(
-                            LinearGradient(colors: [
-                                Color(red: 0.99, green: 0.64, blue: 0.72),
-                                Color(red: 0.94, green: 0.44, blue: 0.57)
-                            ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: Circle()
-                        )
-                        .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.22),
-                                radius: 8, y: 3)
+                // How far the list has covered the poster. Fully receded once
+                // the list has travelled 85% of the poster's height, so the
+                // poster is gone by the time the first row reaches the top.
+                let fade = min(max(y / max(1, heroHeight * 0.85), 0), 1)
+                if abs(fade - heroFade) > 0.004 {
+                    heroFade = fade
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("安装应用")
-
-                Button {
-                    onOpenSideStoreOrHelp()
-                } label: {
-                    Image(systemName: "app.badge")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.94), in: Circle())
-                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
+                // Plus bead follows the reading direction: it tucks away once
+                // the list is pulled upwards (content moving up, offset growing)
+                // and returns as soon as the finger reverses. 6pt of hysteresis
+                // keeps jitter from flickering it.
+                let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
+                lastScrollY = y
+                if y <= 6 {
+                    if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
+                } else if delta > 6 {
+                    if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
+                } else if delta < -6 {
+                    if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开 SideStore")
-
-                Button {
-                    coverTarget = app
-                    coverMenuShown = true
-                } label: {
-                    Image(systemName: "photo")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .frame(width: 40, height: 40)
-                        .background(Color.white.opacity(0.94), in: Circle())
-                        .shadow(color: .black.opacity(0.08), radius: 6, y: 2)
-                }
-                .buttonStyle(.plain)
             }
-            .padding(.horizontal, sideMargin)
-            .padding(.top, 58)
+
+            // Name and run button live ABOVE the list, not on the poster, so
+            // they stay tappable while the poster is uncovered — the scroll
+            // view would otherwise swallow every tap meant for them. They fade
+            // out earlier than the artwork does.
+            heroCaption
         }
-        .frame(width: pageWidth, height: UIScreen.main.bounds.height)
-        .edgesIgnoringSafeArea(.all)
     }
 
-    private func detailFact(icon: String, value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 5) {
-                Image(systemName: icon).font(.system(size: 12))
-                Text(value).font(.system(size: 13, weight: .bold))
-            }
-            .foregroundStyle(.primary)
-            .lineLimit(1)
-            Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
+    // MARK: Pinned poster (portrait)
+
+    // The night ink the list is painted in. Same value as the ambient backdrop,
+    // so the surface and the page never disagree.
+    private var nightInk: Color { Color(red: 0.02, green: 0.05, blue: 0.11) }
+
+    // Sharp poster, with a pre-blurred twin fading in over it. Animating the
+    // blur radius itself would re-run a 26pt gaussian pass on every scroll
+    // frame; cross-fading two static layers costs one composite.
+    //
+    // The frosted copy is masked off over the top of the poster, so the status
+    // bar area — and the strip of artwork behind it — never goes soft, not even
+    // once the list is fully scrolled up. The dimming veil stops at the same
+    // line for the same reason: the clock and the notch stay legible.
+    private var pinnedHero: some View {
+        ZStack(alignment: .top) {
+            portraitHero
+            portraitHero
+                .blur(radius: 26)
+                .opacity(heroFade)
+                .mask(heroTopExclusion)
+                .allowsHitTesting(false)
+            nightInk
+                .opacity(heroFade * 0.66)
+                .mask(heroTopExclusion)
+                .allowsHitTesting(false)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color(uiColor: .systemGray6),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .frame(width: pageWidth, height: heroHeight, alignment: .top)
     }
 
-    // MARK: - v2 container / storage manager
-
-    private func v2ContainerPage(app: LCAppModel) -> some View {
-        let containers = app.appInfo.containers
-        let total = LCGallerySizeStore.shared.sizeText(for: app)
-        return ZStack {
-            Color.white.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("容器与存储").font(.system(size: 24, weight: .heavy)).foregroundStyle(.primary)
-                    Spacer()
-                    Button {
-                        withAnimation(Motion.sheet) { containerTarget = nil }
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.primary)
-                            .frame(width: 34, height: 34)
-                            .background(Color(uiColor: .systemGray6), in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, sideMargin)
-                .padding(.top, 60)
-                .padding(.bottom, 18)
-
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 10) {
-                        ForEach(Array(containers.enumerated()), id: \.offset) { _, c in
-                            let selected = app.uiSelectedContainer == c
-                            HStack(spacing: 12) {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(LCGalleryColorStore.shared.color(for: app).opacity(0.5))
-                                    .frame(width: 42, height: 42)
-                                    .overlay(Image(systemName: "folder").foregroundStyle(.white))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(c.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
-                                    Text(selected ? "当前启动容器" : "点击切换").font(.system(size: 10)).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if selected {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(Color(red: 1.0, green: 0.52, blue: 0.52))
-                                        .font(.system(size: 20))
-                                }
-                            }
-                            .padding(12)
-                            .background(Color.white, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .stroke(Color.black.opacity(0.05), lineWidth: 1)
-                            )
-                            .shadow(color: .black.opacity(0.045), radius: 10, y: 4)
-                            .contentShape(Rectangle())
-                            .onTapGesture { app.uiSelectedContainer = c }
-                        }
-                        if containers.isEmpty {
-                            Text("该应用暂无独立数据文件夹")
-                                .font(.system(size: 13)).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity).padding(.top, 40)
-                        }
-                    }
-                    .padding(.horizontal, sideMargin)
-                }
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("总占用").font(.system(size: 11)).foregroundStyle(.secondary)
-                        Text(total).font(.system(size: 21, weight: .heavy)).foregroundStyle(.primary)
-                    }
-                    Spacer()
-                    Button {
-                        onLaunch(app)
-                    } label: {
-                        Text("启动").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
-                            .padding(.horizontal, 28).frame(height: 48)
-                            .background(
-                                LinearGradient(colors: [
-                                    Color(red: 0.99, green: 0.64, blue: 0.72),
-                                    Color(red: 0.94, green: 0.44, blue: 0.57)
-                                ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                in: Capsule()
-                            )
-                            .shadow(color: Color(red: 0.94, green: 0.44, blue: 0.57).opacity(0.22),
-                                    radius: 10, y: 4)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, sideMargin)
-                .padding(.vertical, 16)
-
-                // Refresh lifelines on the manager sheet as well.
-                HStack(spacing: 12) {
-                    Button {
-                        onOpenSideStoreOrHelp()
-                    } label: {
-                        Label("SideStore", systemImage: "app.badge")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(Color(uiColor: .systemGray6), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    Menu {
-                        Button("从 IPA 安装", systemImage: "doc.badge.plus") { onInstallIPA() }
-                        Button("从链接安装", systemImage: "link.badge.plus") { onInstallURL() }
-                    } label: {
-                        Label("安装", systemImage: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 44)
-                            .background(
-                                LinearGradient(colors: [
-                                    Color(red: 0.99, green: 0.64, blue: 0.72),
-                                    Color(red: 0.94, green: 0.44, blue: 0.57)
-                                ], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                in: Capsule()
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, sideMargin)
-                .padding(.bottom, 24)
-            }
-        }
-        .frame(width: pageWidth, height: UIScreen.main.bounds.height)
-        .edgesIgnoringSafeArea(.all)
+    // Everything below ~11% of the poster's height, nothing above it.
+    private var heroTopExclusion: some View {
+        LinearGradient(stops: [
+            .init(color: .clear, location: 0.0),
+            .init(color: .clear, location: 0.11),
+            .init(color: .black, location: 0.25)
+        ], startPoint: .top, endPoint: .bottom)
     }
 
-    // Poster-style artwork that fills roughly the top half of the screen, with
-    // the detail block floating over its lower gradient. The native 16:9 height
-    // is kept as a floor so small devices never crop the title band away.
-    // Overscroll adds a capped, damped amount so the pull feels elastic without
-    // distorting the cover during normal scrolling.
-    private var coverArtHeight: CGFloat {
-        max(UIScreen.main.bounds.height * 0.5 - detailInfoHeight, pageWidth * 9 / 16)
-    }
-    private var stretchedCoverHeight: CGFloat { coverArtHeight + min(pullDown * 0.26, 62) }
-
-    // Shared scroll bookkeeping: elastic pull, plus-bead direction.
-    private func trackScroll(_ y: CGFloat) {
-        let pull = max(0, -y)
-        if abs(pull - pullDown) > 0.5 { pullDown = min(pull, 340) }
-        let delta = lastScrollY.isNaN ? 0 : y - lastScrollY
-        lastScrollY = y
-        if y <= 6 {
-            if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
-        } else if delta > 6 {
-            if !topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = true } }
-        } else if delta < -6 {
-            if topBeadHidden { withAnimation(.easeInOut(duration: 0.2)) { topBeadHidden = false } }
+    // The list's own surface. Transparent at its top edge, solid 56pt below it.
+    // Not fully opaque on purpose: the poster keeps showing through as it dims,
+    // so the list reads as a sheet laid over it rather than a black wall.
+    private var listSurface: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [nightInk.opacity(0), nightInk.opacity(0.74)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: 56)
+            nightInk.opacity(0.74)
         }
+    }
+
+    private var heroCaption: some View {
+        VStack(spacing: 4) {
+            Spacer(minLength: 0)
+            heroText(compact: false)
+            runButton(compact: false)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 6)
+            // Keeps the CTA off the fade at the bottom of the artwork.
+            Spacer().frame(height: 38)
+        }
+        .frame(width: pageWidth, height: heroHeight)
+        .opacity(max(0, 1 - heroFade * 1.5))
+        .allowsHitTesting(heroFade < 0.12)
+        // The page pins the dark scheme (see portraitPage); this view sits
+        // outside the scroll view now, so it has to carry the same pin for the
+        // frosted run pill.
+        .environment(\.colorScheme, .dark)
     }
 
     // MARK: Poster ownership
@@ -5296,16 +4053,14 @@ struct LCHomeGalleryView: View {
                         .blur(radius: 42)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .clipped()
-                        .overlay(Color.black.opacity(0.38))
+                        .overlay(Color.black.opacity(0.5))
                         .id("backdrop-\(app.appInfo.bundleIdentifier() ?? "\(current)")-\(coverTick)")
                         .transition(.opacity)
                 }
-                // Gentle shade that keeps list text readable but still lets the
-                // blurred poster carry its colour all the way to the bottom.
                 LinearGradient(colors: [
-                    Color.black.opacity(0.06),
-                    Color.black.opacity(0.18),
-                    Color.black.opacity(0.34)
+                    Color.black.opacity(0.10),
+                    Color.black.opacity(0.28),
+                    Color.black.opacity(0.55)
                 ], startPoint: .top, endPoint: .bottom)
             }
             // The frosted backdrop changes with the poster, and the page is
@@ -5420,270 +4175,21 @@ struct LCHomeGalleryView: View {
     private var pageWidth: CGFloat { UIScreen.main.bounds.width }
 
     private var heroHeight: CGFloat {
-        UIScreen.main.bounds.height
+        min(UIScreen.main.bounds.height * 0.66, 620)
     }
 
-    // MARK: Cover header (fixed, about a third of the screen)
-
-    // Fixed height of the title band under the artwork. It is opaque so list
-    // rows can pass underneath without ever pushing the title away.
-    private var detailInfoHeight: CGFloat { 144 }
-
-    private static func shortPlatform(_ raw: String?) -> String {
-        guard let raw else { return "NSW" }
-        if raw.localizedCaseInsensitiveContains("switch") { return "NSW" }
-        if raw.localizedCaseInsensitiveContains("playstation") { return "PS" }
-        if raw.localizedCaseInsensitiveContains("xbox") { return "XBOX" }
-        return raw.count <= 5 ? raw : "NSW"
-    }
-
-    private func detailHeroHeader(coverHeight: CGFloat) -> some View {
-        // The artwork keeps going all the way behind the launch button. Its
-        // lower edge dissolves through a soft black wash into the blurred
-        // poster backdrop, so the whole screen reads as one continuous image
-        // instead of stopping at a flat colour slab.
-        let artHeight = coverHeight + detailInfoHeight
-        return ZStack(alignment: .bottom) {
-            if current < apps.count {
-                let app = apps[current]
-                let key = app.appInfo.bundleIdentifier() ?? "\(current)"
-                Image(uiImage: LCGalleryCoverStore.shared.cover(for: app, wide: true))
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: pageWidth, height: artHeight)
-                    .clipped()
-                    .id("detail-\(key)-\(coverTick)")
-                    .transition(.opacity)
-            } else {
-                LinearGradient(colors: [
-                    Color(red: 0.09, green: 0.36, blue: 0.72),
-                    Color(red: 0.02, green: 0.08, blue: 0.18)
-                ], startPoint: .top, endPoint: .bottom)
-            }
-            // Status glyphs stay legible on bright artwork without a frosted
-            // band: a short, soft shade only, gone by the upper fifth.
-            LinearGradient(stops: [
-                .init(color: .black.opacity(0.34), location: 0.0),
-                .init(color: .black.opacity(0.08), location: 0.12),
-                .init(color: .clear, location: 0.24)
-            ], startPoint: .top, endPoint: .bottom)
-            // Long, many-stop dissolve into the blurred backdrop. The last
-            // stop fades back to clear, so the artwork melts into the full-screen
-            // poster wash below instead of ending on a hard dark band.
-            LinearGradient(stops: [
-                .init(color: .clear, location: 0.0),
-                .init(color: .clear, location: 0.26),
-                .init(color: Color.black.opacity(0.30), location: 0.48),
-                .init(color: Color.black.opacity(0.52), location: 0.68),
-                .init(color: Color.black.opacity(0.42), location: 0.86),
-                .init(color: .clear, location: 1.0)
-            ], startPoint: .top, endPoint: .bottom)
-
-            detailInfoBlock
-        }
-        .frame(width: pageWidth, height: artHeight)
-        .clipped()
-        // Only game switches animate; the pull stretch stays finger-tracked.
-        .animation(.easeInOut(duration: 0.42), value: current)
-    }
-
-    // MARK: Detail block (status, chips, title, launch)
-
-    private var detailInfoBlock: some View {
-        let app = current < apps.count ? apps[current] : nil
-        let meta = app.map { LCGalleryMetaStore.shared.gameMeta(for: $0) }
-        let genre = meta?.genre ?? "游戏"
-        let zh = app?.displayName ?? ""
-        let en = app.map { LCGalleryOnlineCoverStore.englishName(for: $0.displayName) ?? $0.displayName } ?? ""
-        let version = app?.version ?? ""
-        let tint: Color = app.map { LCGalleryColorStore.shared.color(for: $0) }
-            ?? Color(red: 0.55, green: 0.62, blue: 0.78)
-        return HStack(alignment: .bottom, spacing: 10) {
-            // Name + caption on the left keep the full title readable; the
-            // launch controls move to the right edge of the poster band.
-            VStack(alignment: .leading, spacing: 7) {
-                Text(en.isEmpty ? "全部游戏" : en)
-                    .font(.system(size: 25, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-                Text("\(zh) · v\(version) · \(genre)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.68))
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            HStack(spacing: 8) {
-                Button {
-                    if let app { onLaunch(app) }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "play.fill").font(.system(size: 12, weight: .bold))
-                        Text("启动").font(.system(size: 14, weight: .semibold))
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18).padding(.vertical, 11)
-                    .lcTintedGlassCapsule(tint: tint)
-                }
-                .buttonStyle(.plain)
-                Menu {
-                    if let app {
-                        Button("更换封面", systemImage: "photo") {
-                            coverTarget = app
-                            coverMenuShown = true
-                        }
-                        Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-                        Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 38, height: 38)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().stroke(Color.white.opacity(0.22), lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, sideMargin)
-        .padding(.bottom, 12)
-    }
-
-    // MARK: All games section + dark cards
-
-    private var darkGameList: some View {
-        VStack(spacing: 10) {
-            ForEach(Array(visibleApps.enumerated()), id: \.offset) { index, app in
-                darkGameRow(app: app, index: index)
-            }
-        }
-        .padding(.horizontal, sideMargin)
-    }
-
-    private var darkGameGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible(minimum: 0), spacing: 14),
-                            GridItem(.flexible(minimum: 0), spacing: 14)], spacing: 14) {
-            ForEach(Array(visibleApps.enumerated()), id: \.offset) { index, app in
-                coverNameCard(app: app, active: index == current)
-            }
-        }
-        .padding(.horizontal, sideMargin)
-    }
-
-    // 16:9 grid card: full-bleed artwork with the name printed at the bottom
-    // over a soft upward wash. Two columns, no tile icon and no run button —
-    // the whole card is the launch target. A deep shadow lifts it off the page.
-    @ViewBuilder
-    private func coverNameCard(app: LCAppModel, active: Bool) -> some View {
-        let cover = LCGalleryCoverStore.shared.cover(for: app, wide: true)
-        GeometryReader { geo in
-            let w = geo.size.width
-            let artH = w * 9 / 16
-            ZStack(alignment: .bottomLeading) {
-                Image(uiImage: cover)
-                    .resizable().scaledToFill()
-                    .frame(width: w, height: artH)
-                    .clipped()
-                // Bottom wash so the title stays readable on any artwork.
-                LinearGradient(stops: [
-                    .init(color: .clear, location: 0.42),
-                    .init(color: .black.opacity(0.42), location: 0.74),
-                    .init(color: .black.opacity(0.86), location: 1.0)
-                ], startPoint: .top, endPoint: .bottom)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(app.displayName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                    Text(LCGallerySizeStore.shared.sizeText(for: app))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 11)
-                .padding(.bottom, 9)
-            }
-            .frame(width: w, height: artH)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.blue.opacity(active ? 0.65 : 0), lineWidth: active ? 1.6 : 0)
-            )
-        }
-        // GeometryReader needs an explicit height: the 16:9 art height for the
-        // two-column width is ~100pt on current phones.
-        .frame(height: (UIScreen.main.bounds.width - 2 * sideMargin - 14) / 2 * 9 / 16)
-        .shadow(color: .black.opacity(0.35), radius: 12, x: 0, y: 6)
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .onTapGesture { onLaunch(app) }
-        .contextMenu {
-            Button("启动", systemImage: "play") { onLaunch(app) }
-            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-        }
-    }
-
-    @ViewBuilder
-    private func darkGameRow(app: LCAppModel, index: Int, compact: Bool = false) -> some View {
-        let zh = app.displayName
-        let en = LCGalleryOnlineCoverStore.englishName(for: zh) ?? zh
-        let active = index == current
-        HStack(spacing: compact ? 9 : 13) {
-            if let icon = app.appInfo.iconIsDarkIcon(false) {
-                Image(uiImage: icon)
-                    .resizable().scaledToFill()
-                    .frame(width: compact ? 46 : 56, height: compact ? 46 : 56)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 5) {
-                    Text(zh)
-                        .font(.system(size: compact ? 14 : 16, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    if active {
-                        Circle().fill(Color(red: 1.0, green: 0.32, blue: 0.36)).frame(width: 5, height: 5)
-                    }
-                }
-                HStack(spacing: 6) {
-                    Text(en)
-                        .font(.system(size: compact ? 10 : 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    // Footprint sits on its own small plate; the genre tag is
-                    // intentionally left out of list rows.
-                    Text(LCGallerySizeStore.shared.sizeText(for: app))
-                        .font(.system(size: compact ? 9 : 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
-                        .layoutPriority(1)
-                }
-            }
-            Spacer(minLength: 0)
-            Image(systemName: "play.circle.fill")
-                .font(.system(size: compact ? 22 : 25))
-                .foregroundStyle(.secondary.opacity(0.7))
-        }
-        .padding(.horizontal, compact ? 10 : 13)
-        .padding(.vertical, compact ? 9 : 11)
-        .background(Color(uiColor: .secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.blue.opacity(active ? 0.55 : 0), lineWidth: active ? 1.4 : 0)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onTapGesture { onLaunch(app) }
-        .contextMenu {
-            Button("启动", systemImage: "play") { onLaunch(app) }
-            Button("应用设置", systemImage: "gear") { onOpenSettings(app) }
-            Button("卸载", systemImage: "trash", role: .destructive) { onUninstall(app) }
-        }
+    private var portraitHero: some View {
+        let width = pageWidth
+        let height = heroHeight
+        // Artwork only. The name and the run button used to be stacked on top
+        // of it here, but the poster is pinned now and the list slides over it,
+        // so type living inside this layer would be buried by the scroll view.
+        // They are drawn above the list instead — see heroCaption.
+        return heroBackground(width: width, height: height)
+            // Bottom-aligned so the taller stretched background grows upwards
+            // and keeps its bottom edge glued to the hero. Not clipped on
+            // purpose: clipping here would cut exactly that fill.
+            .frame(width: width, height: height, alignment: .bottom)
     }
 
     // MARK: Landscape showcase — three posters per page, hand-swiped
@@ -6125,28 +4631,42 @@ struct LCHomeGalleryView: View {
                 let key = apps[current].appInfo.bundleIdentifier() ?? "\(current)"
                 // Sharp, edge-to-edge poster. It used to be blurred for
                 // non-portrait covers, which fogged the status bar area too.
-                // One clean poster, edge to edge. No caption scrim and no
-                // bottom mask — the reference wants the whole artwork visible.
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: width, height: artHeight)
                     .clipped()
+                    // Dissolve the bottom of the artwork into the blurred page
+                    // colour, so hero and list read as one continuous surface.
+                    .mask(
+                        LinearGradient(stops: [
+                            .init(color: .black, location: 0.0),
+                            .init(color: .black, location: 0.66),
+                            .init(color: .black.opacity(0.86), location: 0.84),
+                            .init(color: .clear, location: 1.0)
+                        ], startPoint: .top, endPoint: .bottom)
+                    )
                     .id("bg-\(key)-\(coverTick)")
-                    .transition(.opacity)
             } else {
                 LinearGradient(colors: [
                     Color(red: 0.09, green: 0.36, blue: 0.72),
                     Color(red: 0.02, green: 0.08, blue: 0.18)
                 ], startPoint: .top, endPoint: .bottom)
             }
+
+            // Scrim only where the caption sits: nothing on top, so the status
+            // bar and upper artwork stay crisp. It also fades out at the very
+            // bottom to match the artwork mask.
+            LinearGradient(stops: [
+                .init(color: .clear, location: 0.0),
+                .init(color: .clear, location: 0.46),
+                .init(color: Color.black.opacity(0.22), location: 0.70),
+                .init(color: Color.black.opacity(0.56), location: 0.87),
+                .init(color: .clear, location: 1.0)
+            ], startPoint: .top, endPoint: .bottom)
         }
         .frame(width: width, height: artHeight)
         .clipped()
-        // The white card drives `current`. Cross-fading the artwork on that
-        // change is what makes the whole poster feel like it follows the card
-        // instead of snapping the moment the index rolls over.
-        .animation(.easeInOut(duration: 0.42), value: current)
     }
 
     @ViewBuilder
@@ -6193,6 +4713,13 @@ struct LCHomeGalleryView: View {
     private var heroGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { v in
+                // Only while the poster is still on screen. Once the list has
+                // covered it, a horizontal drag belongs to whatever is under
+                // the finger, not to the carousel — and the gesture is
+                // attached to the scroll view now, so it would otherwise fire
+                // from anywhere on the page.
+                guard heroFade < 0.2 else { return }
+                guard abs(v.translation.width) > abs(v.translation.height) else { return }
                 if v.translation.width < -36 { goSlide(current + 1) }
                 else if v.translation.width > 36 { goSlide(current - 1) }
             }
